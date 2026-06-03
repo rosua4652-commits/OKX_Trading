@@ -167,6 +167,21 @@ async def compute_dynamic_sl_tp(
     cfg = config or AppConfig()
     if strategy == StrategyMode.BOTH:
         strategy = StrategyMode.SCALP
+
+    from app.backtest.symbol_sl_tp import plan_prices, resolve_entry_sl_tp
+
+    bt = resolve_entry_sl_tp(inst_id, cfg, strategy)
+    if bt is not None:
+        sl_pct, tp_pct, method = bt
+        sl_p, tp_p = plan_prices(entry, side, sl_pct, tp_pct)
+        return DynamicSlTpPlan(
+            stop_loss=round(sl_p, 12),
+            take_profit=round(tp_p, 12),
+            sl_pct=round(sl_pct, 2),
+            tp_pct=round(tp_pct, 2),
+            method=method,
+        )
+
     strat_key = "swing" if strategy == StrategyMode.SWING else "scalp"
     limit = 80 if strategy == StrategyMode.SWING else 60
     candles = await market.candles(inst_id, strat_key, limit)

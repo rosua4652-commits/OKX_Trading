@@ -50,7 +50,9 @@ class AppConfig(BaseModel):
     max_order_size_usdt: float = 0.0
     min_order_size_usdt: float = 10.0
     size_split_slots: bool = False
+    order_size_basis: str = "notional"
     leverage: int = 3
+    margin_mode: str = "isolated"
     stop_loss_pct: float = 2.0
     take_profit_pct: float = 3.0
     trailing_stop: bool = True
@@ -59,8 +61,9 @@ class AppConfig(BaseModel):
     scan_symbols: list[str] = Field(default_factory=lambda: ["BTC-USDT-SWAP", "ETH-USDT-SWAP"])
     min_score: float = 55.0
     backtest_auto_settings: bool = False
+    backtest_auto_sl_tp: bool = False
     backtest_interval_minutes: int = Field(default=60, ge=1, le=1440)
-    paper_initial_balance: float = 10_000.0
+    paper_initial_balance: float = Field(default=10_000.0, gt=0)
     okx_api_key: str = ""
     okx_api_secret: str = ""
     okx_passphrase: str = ""

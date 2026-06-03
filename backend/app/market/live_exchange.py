@@ -11,10 +11,11 @@ from app.models import AppConfig, InstrumentType, PositionSide
 logger = logging.getLogger("oat.live")
 
 
-def _td_mode(instrument: InstrumentType) -> str:
-    if instrument == InstrumentType.SPOT:
+def _td_mode(config: AppConfig) -> str:
+    if config.instrument_type == InstrumentType.SPOT:
         return "cash"
-    return "cross"
+    mode = (getattr(config, "margin_mode", None) or "isolated").lower()
+    return "isolated" if mode == "isolated" else "cross"
 
 
 async def live_open(
@@ -39,9 +40,14 @@ async def live_open(
     if price <= 0:
         return False, "가격 오류", 0.0
 
-    td_mode = _td_mode(config.instrument_type)
+    td_mode = _td_mode(config)
     if config.instrument_type != InstrumentType.SPOT:
-        client.set_leverage(inst_id, config.leverage, td_mode)
+        client.set_leverage(
+            inst_id,
+            config.leverage,
+            td_mode,
+            pos_side=side.value if td_mode == "isolated" else "",
+        )
 
     if config.instrument_type == InstrumentType.SPOT:
         if side == PositionSide.LONG:
@@ -83,7 +89,7 @@ async def live_close(
     if not client.has_credentials:
         return False, "API 키 없음"
 
-    td_mode = _td_mode(config.instrument_type)
+    td_mode = _td_mode(config)
     sz = (
         str(max(1, int(quantity)))
         if config.instrument_type != InstrumentType.SPOT

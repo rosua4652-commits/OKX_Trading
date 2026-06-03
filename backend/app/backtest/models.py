@@ -24,6 +24,9 @@ class BacktestTrade(BaseModel):
     score: float
     sl_pct: float
     tp_pct: float
+    notional_usdt: float = 0.0
+    margin_usdt: float = 0.0
+    fee_usdt: float = 0.0
     pnl_usdt: float
     pnl_pct: float
     exit_reason: str
@@ -49,6 +52,16 @@ class BacktestDirectionTrial(BaseModel):
     short_trades: int = 0
 
 
+class BacktestSlTpTrial(BaseModel):
+    stop_loss_pct: float
+    take_profit_pct: float
+    total_pnl: float
+    win_rate: float
+    trades: int
+    tp_hits: int = 0
+    sl_hits: int = 0
+
+
 class BacktestRecommendation(BaseModel):
     min_score: float
     reason: str
@@ -57,6 +70,10 @@ class BacktestRecommendation(BaseModel):
     direction_reason: str = ""
     direction_trials: list[BacktestDirectionTrial] = Field(default_factory=list)
     window_ratio: float = 1.0
+    stop_loss_pct: float = 0.0
+    take_profit_pct: float = 0.0
+    sl_tp_reason: str = ""
+    sl_tp_trials: list[BacktestSlTpTrial] = Field(default_factory=list)
 
 
 class SymbolCandleChart(BaseModel):
@@ -76,6 +93,10 @@ class BacktestMetrics(BaseModel):
     avg_score_entries: float = 0.0
     max_drawdown_pct: float = 0.0
     bars_evaluated: int = 0
+    start_equity: float = 0.0
+    end_equity: float = 0.0
+    order_notional_usdt: float = 0.0
+    total_fees_usdt: float = 0.0
 
 
 class BacktestResult(BaseModel):
@@ -94,6 +115,7 @@ class BacktestResult(BaseModel):
     trades: list[BacktestTrade] = Field(default_factory=list)
     logs: list[BacktestLogEntry] = Field(default_factory=list)
     error: str = ""
+    symbol_profiles: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class BacktestStatus(BaseModel):

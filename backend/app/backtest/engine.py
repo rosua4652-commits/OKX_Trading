@@ -20,6 +20,7 @@ from app.models import (
     PositionSide,
     StrategyMode,
 )
+from app.order_sizing import resolve_order_size_usdt
 from app.strategy_utils import active_strategies, sl_tp_pcts
 from app.backtest.candles_util import build_symbol_charts
 from app.backtest.models import (
@@ -29,11 +30,14 @@ from app.backtest.models import (
     BacktestRecommendation,
     BacktestResult,
     BacktestScoreTrial,
+    BacktestSlTpTrial,
     BacktestTrade,
 )
 
 SCORE_GRID = [45.0, 50.0, 55.0, 60.0, 65.0, 70.0]
 WINDOW_RATIOS = [1.0, 0.75, 0.5]
+SL_GRID = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0]
+TP_GRID = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0]
 
 
 def _utc_now() -> str:
@@ -139,6 +143,7 @@ def _record_close(
     state: _SimState,
     logs: list[BacktestLogEntry],
     reason: str,
+    leverage: int = 1,
 ) -> None:
     fee = sim.notional * settings.trading_fee_pct / 100 * 2
     if sim.side == PositionSide.LONG:
@@ -147,6 +152,8 @@ def _record_close(
         pnl = sim.notional * (sim.entry_price - price) / sim.entry_price
     pnl -= fee
     pnl_pct = pnl / sim.notional * 100 if sim.notional > 0 else 0
+    lev = max(1, leverage)
+    margin = sim.notional / lev
     state.trades.append(
         BacktestTrade(
             inst_id=inst_id,
@@ -159,6 +166,9 @@ def _record_close(
             score=sim.score,
             sl_pct=sim.sl_pct,
             tp_pct=sim.tp_pct,
+            notional_usdt=round(sim.notional, 2),
+            margin_usdt=round(margin, 2),
+            fee_usdt=round(fee, 2),
             pnl_usdt=round(pnl, 2),
             pnl_pct=round(pnl_pct, 2),
             exit_reason=reason,
@@ -169,7 +179,10 @@ def _record_close(
         BacktestLogEntry(
             ts=_utc_now(),
             level="info",
-            message=f"{inst_id} 청산 {reason} PnL {pnl:+.2f}",
+            message=(
+                f"{inst_id} 청산 {reason} | 투입 ${sim.notional:,.0f} "
+                f"→ 손익 {pnl:+.2f} USDT ({pnl_pct:+.2f}%)"
+            ),
         )
     )
 
@@ -178,6 +191,7 @@ def _close_open_positions(
     symbol_candles: dict[str, list[list]],
     state: _SimState,
     logs: list[BacktestLogEntry],
+    leverage: int = 1,
 ) -> None:
     for iid, sim in list(state.positions.items()):
         candles = symbol_candles.get(iid)
@@ -185,7 +199,7 @@ def _close_open_positions(
             continue
         last_i = len(candles) - 1
         price = float(candles[last_i][4])
-        _record_close(sim, iid, price, last_i, state, logs, "백테스트 종료 청산")
+        _record_close(sim, iid, price, last_i, state, logs, "백테스트 종료 청산", leverage)
         del state.positions[iid]
 
 
@@ -270,7 +284,7 @@ def simulate_symbol(
             pos = _to_position(sim, price, cfg)
             exit_flag, reason = should_exit(pos, cfg)
             if exit_flag:
-                _record_close(sim, inst_id, price, i, state, logs, reason)
+                _record_close(sim, inst_id, price, i, state, logs, reason, cfg.leverage)
                 del state.positions[iid]
 
         if inst_id in state.positions:
@@ -298,7 +312,9 @@ def simulate_symbol(
 
             sl_pct, tp_pct = sl_tp_pcts(cfg, strat)
             sl, tp = _sl_tp_prices(price, side, sl_pct, tp_pct)
-            notional = cfg.order_size_usdt
+            notional = resolve_order_size_usdt(cfg, snap, open_positions=len(state.positions))
+            lev = max(1, cfg.leverage)
+            margin = notional / lev
             state.positions[inst_id] = _SimPos(
                 inst_id=inst_id,
                 side=side,
@@ -320,6 +336,7 @@ def simulate_symbol(
                     level="info",
                     message=(
                         f"{inst_id} 진입 {side.value} bar={i} score={cand.score:.0f} "
+                        f"명목 ${notional:,.0f} · 증거금 ${margin:,.0f} ({lev}x) "
                         f"SL{sl_pct}% TP{tp_pct}%"
                     ),
                 )
@@ -362,14 +379,22 @@ def run_simulation(
             invert_signals=invert_signals,
         )
 
-    _close_open_positions(sliced, state, logs)
+    _close_open_positions(sliced, state, logs, config.leverage)
     return state, total_bars
 
 
-def _metrics_from_state(state: _SimState, bars: int, start_equity: float) -> BacktestMetrics:
+def _metrics_from_state(
+    state: _SimState,
+    bars: int,
+    start_equity: float,
+    order_notional: float = 0.0,
+) -> BacktestMetrics:
     trades = state.trades
     wins = sum(1 for t in trades if t.pnl_usdt > 0)
     total_pnl = sum(t.pnl_usdt for t in trades)
+    total_fees = sum(t.fee_usdt for t in trades)
+    if not order_notional and trades:
+        order_notional = sum(t.notional_usdt for t in trades) / len(trades)
     long_n = sum(1 for t in trades if t.side == "long")
     short_n = sum(1 for t in trades if t.side == "short")
     avg_score = sum(t.score for t in trades) / len(trades) if trades else 0.0
@@ -392,6 +417,10 @@ def _metrics_from_state(state: _SimState, bars: int, start_equity: float) -> Bac
         avg_score_entries=round(avg_score, 1),
         max_drawdown_pct=round(max_dd, 2),
         bars_evaluated=bars,
+        start_equity=round(start_equity, 2),
+        end_equity=round(state.equity, 2),
+        order_notional_usdt=round(order_notional, 2),
+        total_fees_usdt=round(total_fees, 2),
     )
 
 
@@ -399,6 +428,95 @@ def _trial_rank(pnl: float, win_rate: float, trades: int) -> float:
     if trades < 1:
         return -1e9
     return pnl + win_rate * 0.35 + min(trades, 25) * 0.15
+
+
+def _sl_tp_rank(win_rate: float, pnl: float, trades: int, tp_hits: int) -> float:
+    """Prioritize win rate; reward TP hits over end-of-test closes."""
+    if trades < 2:
+        return -1e9
+    tp_bonus = min(tp_hits, trades) * 0.4
+    return win_rate * 3.5 + min(trades, 30) * 0.2 + pnl * 0.08 + tp_bonus
+
+
+def _count_exit_types(trades: list[BacktestTrade]) -> tuple[int, int]:
+    sl_hits = tp_hits = 0
+    for t in trades:
+        if "손절" in t.exit_reason:
+            sl_hits += 1
+        elif "익절" in t.exit_reason:
+            tp_hits += 1
+    return sl_hits, tp_hits
+
+
+def optimize_sl_tp(
+    config: AppConfig,
+    symbol_candles: dict[str, list[list]],
+    logs: list[BacktestLogEntry],
+    min_score: float,
+    invert_signals: bool,
+    window_ratio: float,
+) -> tuple[float, float, list[BacktestSlTpTrial], str]:
+    trials: list[BacktestSlTpTrial] = []
+    best_rank = float("-inf")
+    best_sl = config.stop_loss_pct or 2.0
+    best_tp = config.take_profit_pct or 3.0
+    base_sl = best_sl
+    base_tp = best_tp
+
+    sl_candidates = sorted(set(SL_GRID + [round(base_sl * 0.75, 2), round(base_sl, 2), round(base_sl * 1.25, 2)]))
+    tp_candidates = sorted(set(TP_GRID + [round(base_tp * 0.75, 2), round(base_tp, 2), round(base_tp * 1.25, 2)]))
+
+    logs.append(
+        BacktestLogEntry(
+            ts=_utc_now(),
+            level="info",
+            message=f"SL/TP 탐색 (승률 우선) — score={min_score} SL 후보 {len(sl_candidates)} × TP {len(tp_candidates)}",
+        )
+    )
+
+    for sl in sl_candidates:
+        for tp in tp_candidates:
+            if tp < sl * 0.6:
+                continue
+            cfg = config.model_copy(deep=True)
+            cfg.stop_loss_pct = sl
+            cfg.take_profit_pct = tp
+            state, _ = run_simulation(
+                cfg,
+                symbol_candles,
+                [],
+                min_score_override=min_score,
+                invert_signals=invert_signals,
+                window_ratio=window_ratio,
+            )
+            pnl = sum(t.pnl_usdt for t in state.trades)
+            wins = sum(1 for t in state.trades if t.pnl_usdt > 0)
+            wr = wins / len(state.trades) * 100 if state.trades else 0.0
+            sl_h, tp_h = _count_exit_types(state.trades)
+            trial = BacktestSlTpTrial(
+                stop_loss_pct=sl,
+                take_profit_pct=tp,
+                total_pnl=round(pnl, 2),
+                win_rate=round(wr, 1),
+                trades=len(state.trades),
+                tp_hits=tp_h,
+                sl_hits=sl_h,
+            )
+            trials.append(trial)
+            rank = _sl_tp_rank(wr, pnl, len(state.trades), tp_h)
+            if rank > best_rank:
+                best_rank = rank
+                best_sl, best_tp = sl, tp
+
+    reason = (
+        f"승률 우선 SL {best_sl}% / TP {best_tp}% "
+        f"(후보 {len(trials)}개, score={min_score})"
+    )
+    top = sorted(trials, key=lambda t: _sl_tp_rank(t.win_rate, t.total_pnl, t.trades, t.tp_hits), reverse=True)
+    if top:
+        t0 = top[0]
+        reason += f" — 최고 승률 {t0.win_rate}% PnL {t0.total_pnl:+.2f} ({t0.trades}건)"
+    return best_sl, best_tp, trials, reason
 
 
 def optimize_strategy(
@@ -512,6 +630,15 @@ def optimize_strategy(
             f" | 정방향 승률 {normal_best.win_rate}% 낮음 → 역방향 {inverse_best.win_rate}% 우세"
         )
 
+    rec_sl, rec_tp, sl_tp_trials, sl_tp_reason = optimize_sl_tp(
+        config,
+        symbol_candles,
+        logs,
+        best.min_score,
+        best.mode == "inverse",
+        best.window_ratio,
+    )
+
     return BacktestRecommendation(
         min_score=best.min_score,
         reason=dir_reason,
@@ -520,6 +647,10 @@ def optimize_strategy(
         direction_reason=dir_reason,
         direction_trials=direction_trials,
         window_ratio=best.window_ratio,
+        stop_loss_pct=rec_sl,
+        take_profit_pct=rec_tp,
+        sl_tp_reason=sl_tp_reason,
+        sl_tp_trials=sl_tp_trials,
     )
 
 
@@ -560,15 +691,32 @@ def build_result(
     invert_run = recommendation.direction == "inverse" if recommendation else False
     window_run = recommendation.window_ratio if recommendation else 1.0
     min_run = recommendation.min_score if recommendation else config.min_score
+
+    run_cfg = config.model_copy(deep=True)
+    if recommendation and recommendation.stop_loss_pct > 0 and recommendation.take_profit_pct > 0:
+        run_cfg.stop_loss_pct = recommendation.stop_loss_pct
+        run_cfg.take_profit_pct = recommendation.take_profit_pct
+
     state, bars = run_simulation(
-        config,
+        run_cfg,
         symbol_candles,
         logs,
         min_score_override=min_run,
         invert_signals=invert_run,
         window_ratio=window_run,
     )
-    metrics = _metrics_from_state(state, bars, start_equity)
+    initial_snap = PortfolioSnapshot(
+        balance=start_equity,
+        equity=start_equity,
+        available=start_equity,
+        unrealized_pnl=0,
+        realized_pnl=0,
+        positions=[],
+        trade_count=0,
+        win_rate=0,
+    )
+    order_notional = resolve_order_size_usdt(run_cfg, initial_snap, open_positions=0)
+    metrics = _metrics_from_state(state, bars, start_equity, order_notional)
 
     finished = _utc_now()
     logs.append(
@@ -576,8 +724,10 @@ def build_result(
             ts=finished,
             level="ok",
             message=(
-                f"완료 PnL {metrics.total_pnl:+.2f} ({metrics.total_pnl_pct:+.1f}%) "
-                f"거래 {metrics.trade_count} 승률 {metrics.win_rate}%"
+                f"완료 시작 ${metrics.start_equity:,.0f} → 최종 ${metrics.end_equity:,.0f} "
+                f"(손익 {metrics.total_pnl:+.2f} USDT, {metrics.total_pnl_pct:+.2f}%) "
+                f"1회 명목 ${metrics.order_notional_usdt:,.0f} · "
+                f"거래 {metrics.trade_count}건 승률 {metrics.win_rate}%"
             ),
         )
     )
@@ -591,6 +741,35 @@ def build_result(
     else:
         interval = "5m"
     charts = build_symbol_charts(symbol_candles, state.trades)
+
+    symbol_profile_data: dict[str, dict] = {}
+    if recommendation and symbol_candles:
+        from app.backtest.symbol_sl_tp import build_symbol_profiles, persist_profiles_from_backtest
+
+        built = build_symbol_profiles(
+            run_cfg,
+            symbol_candles,
+            state.trades,
+            min_run,
+            invert_run,
+            window_run,
+            rid,
+        )
+        if built:
+            merged = persist_profiles_from_backtest(built)
+            symbol_profile_data = {k: v.model_dump() for k, v in merged.items()}
+            for iid, p in built.items():
+                logs.append(
+                    BacktestLogEntry(
+                        ts=_utc_now(),
+                        level="info",
+                        message=(
+                            f"{iid} 종목 SL/TP — SL {p.stop_loss_pct}% TP {p.take_profit_pct}% "
+                            f"승률 {p.win_rate}% ({p.trades}건"
+                            f"{f'·익절평균 {p.avg_win_tp_pct}%' if p.avg_win_tp_pct else ''})"
+                        ),
+                    )
+                )
 
     return BacktestResult(
         id=rid,
@@ -614,9 +793,15 @@ def build_result(
             "leverage": config.leverage,
             "stop_loss_pct": config.stop_loss_pct,
             "take_profit_pct": config.take_profit_pct,
+            "stop_loss_pct_applied": run_cfg.stop_loss_pct,
+            "take_profit_pct_applied": run_cfg.take_profit_pct,
+            "start_equity": start_equity,
+            "end_equity": metrics.end_equity,
+            "order_notional_usdt": metrics.order_notional_usdt,
         },
         metrics=metrics,
         recommendation=recommendation,
         trades=state.trades,
         logs=logs,
+        symbol_profiles=symbol_profile_data,
     )

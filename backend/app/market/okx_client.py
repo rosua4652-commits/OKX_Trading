@@ -142,16 +142,25 @@ class OKXClient:
             logger.error("get_positions error: %s", e)
         return []
 
-    def set_leverage(self, inst_id: str, lever: int, mgn_mode: str = "cross") -> bool:
+    def set_leverage(
+        self,
+        inst_id: str,
+        lever: int,
+        mgn_mode: str = "cross",
+        pos_side: str = "",
+    ) -> bool:
         self._ensure_imports()
         if not self._account:
             return False
         try:
-            result = self._account.set_leverage(
-                instId=inst_id,
-                lever=str(lever),
-                mgnMode=mgn_mode,
-            )
+            params: dict[str, Any] = {
+                "instId": inst_id,
+                "lever": str(lever),
+                "mgnMode": mgn_mode,
+            }
+            if mgn_mode == "isolated" and pos_side:
+                params["posSide"] = pos_side
+            result = self._account.set_leverage(**params)
             return self._ok(result)
         except Exception as e:
             logger.error("set_leverage error: %s", e)

@@ -19,6 +19,7 @@ export interface Position {
   instrument_type?: string;
   opened_at?: string;
   leverage?: number;
+  notional_usdt?: number;
 }
 
 export interface CoinCandidate {
@@ -63,13 +64,16 @@ export interface AppConfig {
   max_order_size_usdt?: number;
   min_order_size_usdt?: number;
   size_split_slots?: boolean;
+  order_size_basis?: string;
   leverage: number;
+  margin_mode?: string;
   stop_loss_pct: number;
   take_profit_pct: number;
   trailing_stop: boolean;
   allow_short: boolean;
   min_score: number;
   backtest_auto_settings?: boolean;
+  backtest_auto_sl_tp?: boolean;
   backtest_interval_minutes?: number;
   scan_symbols?: string[];
   paper_initial_balance: number;
@@ -119,6 +123,16 @@ export interface BacktestDirectionTrial {
   short_trades?: number;
 }
 
+export interface BacktestSlTpTrial {
+  stop_loss_pct: number;
+  take_profit_pct: number;
+  total_pnl: number;
+  win_rate: number;
+  trades: number;
+  tp_hits?: number;
+  sl_hits?: number;
+}
+
 export interface BacktestRecommendation {
   min_score: number;
   reason: string;
@@ -127,6 +141,10 @@ export interface BacktestRecommendation {
   direction_reason?: string;
   direction_trials?: BacktestDirectionTrial[];
   window_ratio?: number;
+  stop_loss_pct?: number;
+  take_profit_pct?: number;
+  sl_tp_reason?: string;
+  sl_tp_trials?: BacktestSlTpTrial[];
 }
 
 export interface BacktestMetrics {
@@ -139,6 +157,10 @@ export interface BacktestMetrics {
   avg_score_entries: number;
   max_drawdown_pct: number;
   bars_evaluated: number;
+  start_equity?: number;
+  end_equity?: number;
+  order_notional_usdt?: number;
+  total_fees_usdt?: number;
 }
 
 export interface BacktestTrade {
@@ -152,6 +174,9 @@ export interface BacktestTrade {
   score: number;
   sl_pct: number;
   tp_pct: number;
+  notional_usdt?: number;
+  margin_usdt?: number;
+  fee_usdt?: number;
   pnl_usdt: number;
   pnl_pct: number;
   exit_reason: string;
@@ -170,6 +195,19 @@ export interface SymbolCandleChart {
   trade_markers?: { entry: number; exit: number }[];
 }
 
+export interface SymbolSlTpProfile {
+  inst_id: string;
+  stop_loss_pct: number;
+  take_profit_pct: number;
+  win_rate: number;
+  trades: number;
+  tp_hits?: number;
+  sl_hits?: number;
+  avg_win_tp_pct?: number;
+  updated_at?: string;
+  run_id?: string;
+}
+
 export interface BacktestResult {
   id: string;
   status: string;
@@ -185,6 +223,7 @@ export interface BacktestResult {
   trades?: BacktestTrade[];
   logs?: BacktestLogEntry[];
   error?: string;
+  symbol_profiles?: Record<string, SymbolSlTpProfile>;
 }
 
 export interface BacktestStatus {
@@ -207,10 +246,15 @@ export interface BacktestHistoryEntry {
     reason?: string;
     direction?: string;
     window_ratio?: number;
+    stop_loss_pct?: number;
+    take_profit_pct?: number;
   };
   direction?: string;
   window_ratio?: number;
   trade_count: number;
+  applied_sl_pct?: number;
+  applied_tp_pct?: number;
+  exit_stats?: { sl: number; tp: number; end_close: number; trailing: number; other: number };
   error?: string;
 }
 
@@ -218,6 +262,7 @@ export interface BacktestBundle {
   status: BacktestStatus;
   result: BacktestResult | null;
   history?: BacktestHistoryEntry[];
+  symbol_profiles?: SymbolSlTpProfile[];
   auto_run?: boolean;
   interval_sec?: number;
   interval_minutes?: number;
@@ -237,6 +282,15 @@ export interface StatusData {
   portfolio_source?: "paper" | "okx";
   portfolio_sync_message?: string;
   next_order_size_usdt?: number;
+  next_order_size_detail?: {
+    notional_usdt: number;
+    margin_usdt: number;
+    leverage: number;
+    summary: string;
+    steps: string[];
+    slots_remaining: number;
+    order_size_basis: string;
+  };
   trades?: TradeRecord[];
   backtest?: BacktestBundle;
 }

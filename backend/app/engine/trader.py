@@ -148,6 +148,7 @@ class TradingEngine:
                 get_status as bt_status,
                 interval_seconds,
             )
+            from app.backtest.symbol_sl_tp import profiles_for_client
             from app.config import settings as app_settings
 
             bt = bt_status()
@@ -156,6 +157,7 @@ class TradingEngine:
                 "status": bt.model_dump(),
                 "result": latest.model_dump() if latest else None,
                 "history": get_history(20),
+                "symbol_profiles": profiles_for_client(),
                 "auto_run": app_settings.backtest_auto_run,
                 "interval_sec": interval_seconds(self.config),
                 "interval_minutes": self.config.backtest_interval_minutes,
@@ -493,8 +495,8 @@ class TradingEngine:
 
     async def reset_paper_portfolio(self, initial_balance: float | None = None) -> float:
         bal = initial_balance if initial_balance is not None else self.config.paper_initial_balance
-        if bal < 100:
-            bal = 100.0
+        if bal <= 0:
+            raise ValueError("초기자금은 0보다 커야 합니다")
         old_cfg = self.config.model_copy(deep=True)
         self.config.paper_initial_balance = bal
         bal_changes = format_config_changes(old_cfg, self.config)

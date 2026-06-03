@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CandleChart, type ChartLevels } from "./CandleChart";
 import { fmtNum, fmtPrice } from "./format";
 import { slTpFromPrices } from "./format";
@@ -15,6 +15,13 @@ export type ChartViewTarget = {
   position?: Position;
 };
 
+function defaultModalSize() {
+  return {
+    w: Math.min(1100, Math.round(window.innerWidth * 0.92)),
+    h: Math.min(780, Math.round(window.innerHeight * 0.88)),
+  };
+}
+
 export function ChartModal({
   target,
   onClose,
@@ -26,10 +33,17 @@ export function ChartModal({
 }) {
   const [tab, setTab] = useState<"oat" | "tv">("oat");
   const bodyRef = useRef<HTMLDivElement>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
   const [chartHeight, setChartHeight] = useState(420);
+  const [modalSize, setModalSize] = useState(defaultModalSize);
+  const resizingRef = useRef(false);
 
   useEffect(() => {
     if (target) setTab(target.position ? "oat" : "oat");
+  }, [target?.instId]);
+
+  useEffect(() => {
+    if (target) setModalSize(defaultModalSize());
   }, [target?.instId]);
 
   useEffect(() => {
@@ -40,7 +54,7 @@ export function ChartModal({
     const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [target?.instId, tab]);
+  }, [target?.instId, tab, modalSize]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -49,6 +63,51 @@ export function ChartModal({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  const handleBackdropMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      if (resizingRef.current) return;
+      if (e.target === e.currentTarget) onClose();
+    },
+    [onClose],
+  );
+
+  const handleResizeStart = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      e.stopPropagation();
+      resizingRef.current = true;
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const startW = modalSize.w;
+      const startH = modalSize.h;
+
+      const onMove = (ev: PointerEvent) => {
+        setModalSize({
+          w: Math.min(
+            window.innerWidth * 0.98,
+            Math.max(520, startW + ev.clientX - startX),
+          ),
+          h: Math.min(
+            window.innerHeight * 0.96,
+            Math.max(480, startH + ev.clientY - startY),
+          ),
+        });
+      };
+
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.setTimeout(() => {
+          resizingRef.current = false;
+        }, 0);
+      };
+
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    },
+    [modalSize.h, modalSize.w],
+  );
 
   if (!target) return null;
 
@@ -81,11 +140,18 @@ export function ChartModal({
     : {});
 
   return (
-    <div className="chart-modal-backdrop" onClick={onClose}>
+    <div
+      className="chart-modal-backdrop"
+      onMouseDown={handleBackdropMouseDown}
+      role="presentation"
+    >
       <div
+        ref={modalRef}
         className="chart-modal chart-modal-resizable"
-        onClick={(e) => e.stopPropagation()}
-        title="우하단 모서리를 드래그해 크기 조절"
+        style={{ width: modalSize.w, height: modalSize.h }}
+        onMouseDown={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
       >
         <div className="chart-modal-header">
           <div>
@@ -144,7 +210,13 @@ export function ChartModal({
             <TradingViewChart instId={target.instId} strategy={chartStrat} height={chartHeight} />
           )}
         </div>
-        <span className="chart-modal-resize-hint">↘ 크기 조절</span>
+        <div
+          className="chart-modal-resize-handle"
+          onPointerDown={handleResizeStart}
+          title="드래그하여 크기 조절"
+        >
+          ↘ 크기 조절
+        </div>
       </div>
     </div>
   );

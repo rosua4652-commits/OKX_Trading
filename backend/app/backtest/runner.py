@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Optional
 
 from app.backtest.engine import build_result
+from app.backtest.history_sl_tp import exit_stats_from_trades, merge_sl_tp_with_history
 from app.backtest.models import BacktestLogEntry, BacktestResult, BacktestStatus
 from app.config import settings
 from app.market.data_provider import market
@@ -37,7 +39,7 @@ def set_auto_apply_handler(handler: Callable[[BacktestResult], None] | None) -> 
 
 
 def _try_auto_apply_settings(config: AppConfig, result: BacktestResult) -> None:
-    if not config.backtest_auto_settings:
+    if not config.backtest_auto_settings and not config.backtest_auto_sl_tp:
         return
     if result.status != "done" or not result.recommendation:
         return
@@ -69,12 +71,51 @@ def get_history(limit: int = 30) -> list[dict[str, Any]]:
         return []
     lines = HISTORY_FILE.read_text(encoding="utf-8").strip().splitlines()
     out: list[dict[str, Any]] = []
-    for line in lines[-limit:]:
+    for line in lines[-max(limit * 2, limit):]:
         try:
             out.append(json.loads(line))
         except json.JSONDecodeError:
             continue
-    return list(reversed(out))
+    out = list(reversed(out))
+    seen: set[tuple[str, str]] = set()
+    deduped: list[dict[str, Any]] = []
+    for entry in out:
+        key = (str(entry.get("id") or ""), str(entry.get("finished_at") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(entry)
+    return deduped[:limit]
+
+
+def _merge_history_sl_tp(result: BacktestResult, config: AppConfig) -> BacktestResult:
+    """Blend grid SL/TP with accumulated history when auto SL/TP is enabled."""
+    if not result.recommendation:
+        return result
+    rec = result.recommendation
+    if rec.stop_loss_pct <= 0 or rec.take_profit_pct <= 0:
+        return result
+
+    prior = get_history(50)
+    merged_sl, merged_tp, note = merge_sl_tp_with_history(
+        rec.stop_loss_pct,
+        rec.take_profit_pct,
+        prior,
+        use_history=config.backtest_auto_sl_tp or len(prior) >= 3,
+    )
+    if merged_sl == rec.stop_loss_pct and merged_tp == rec.take_profit_pct:
+        return result
+
+    updated = result.model_copy(deep=True)
+    updated.recommendation = rec.model_copy(deep=True)
+    updated.recommendation.stop_loss_pct = merged_sl
+    updated.recommendation.take_profit_pct = merged_tp
+    updated.recommendation.sl_tp_reason = f"{rec.sl_tp_reason} | {note}"
+    snap = dict(updated.params_snapshot or {})
+    snap["stop_loss_pct_applied"] = merged_sl
+    snap["take_profit_pct_applied"] = merged_tp
+    updated.params_snapshot = snap
+    return updated
 
 
 def _save_result(result: BacktestResult) -> None:
@@ -82,6 +123,14 @@ def _save_result(result: BacktestResult) -> None:
     RESULT_FILE.write_text(
         result.model_dump_json(indent=2),
         encoding="utf-8",
+    )
+    trade_dicts = [t.model_dump() for t in result.trades]
+    exit_stats = exit_stats_from_trades(trade_dicts)
+    applied_sl = result.params_snapshot.get("stop_loss_pct_applied") or result.params_snapshot.get(
+        "stop_loss_pct"
+    )
+    applied_tp = result.params_snapshot.get("take_profit_pct_applied") or result.params_snapshot.get(
+        "take_profit_pct"
     )
     summary = {
         "id": result.id,
@@ -100,6 +149,9 @@ def _save_result(result: BacktestResult) -> None:
             result.recommendation.model_dump() if result.recommendation else None
         ),
         "trade_count": len(result.trades),
+        "exit_stats": exit_stats,
+        "applied_sl_pct": applied_sl,
+        "applied_tp_pct": applied_tp,
         "error": result.error,
     }
     with HISTORY_FILE.open("a", encoding="utf-8") as f:
@@ -161,21 +213,28 @@ async def _run_job(config: AppConfig, symbols: list[str], candle_limit: int, opt
             optimize,
         )
 
+        live_cfg = _config_supplier() if _config_supplier else config
+        result = _merge_history_sl_tp(result, live_cfg)
         _latest = result
         _save_result(result)
-        live_cfg = _config_supplier() if _config_supplier else config
         _try_auto_apply_settings(live_cfg, result)
         _status.result_id = result.id
         _status.progress_pct = 100.0
         _status.phase = "done"
-        rec = result.recommendation.min_score if result.recommendation else config.min_score
-        _status.message = f"완료 — 추천 min_score {rec}"
+        rec = result.recommendation
+        if rec:
+            _status.message = (
+                f"완료 — score {rec.min_score} SL {rec.stop_loss_pct}% TP {rec.take_profit_pct}% "
+                f"승률 {result.metrics.win_rate}%"
+            )
+        else:
+            _status.message = "완료"
         logger.info("Backtest %s done PnL=%s", result.id, result.metrics.total_pnl)
     except Exception as e:
         logger.exception("Backtest failed")
         logs.append(BacktestLogEntry(ts=utc_now_iso(), level="error", message=str(e)))
         fail = BacktestResult(
-            id="error",
+            id=f"err-{uuid.uuid4().hex[:8]}",
             status="error",
             started_at=utc_now_iso(),
             finished_at=utc_now_iso(),
@@ -272,9 +331,16 @@ def apply_recommendation(config: AppConfig) -> tuple[bool, str, dict[str, Any]]:
     if not latest or not latest.recommendation:
         return False, "적용할 추천 없음 (백테스트 먼저 실행)", {}
     rec = latest.recommendation
-    changes = {
+    changes: dict[str, Any] = {
         "min_score": rec.min_score,
         "backtest_applied_at": utc_now_iso(),
         "backtest_result_id": latest.id,
     }
-    return True, f"min_score → {rec.min_score} 적용", changes
+    if rec.stop_loss_pct > 0:
+        changes["stop_loss_pct"] = rec.stop_loss_pct
+    if rec.take_profit_pct > 0:
+        changes["take_profit_pct"] = rec.take_profit_pct
+    msg = f"min_score → {rec.min_score}"
+    if rec.stop_loss_pct > 0 and rec.take_profit_pct > 0:
+        msg += f", SL {rec.stop_loss_pct}% / TP {rec.take_profit_pct}%"
+    return True, msg + " 적용", changes

@@ -21,7 +21,9 @@ _LABELS: dict[str, str] = {
     "max_order_size_usdt": "주문 상한(USDT)",
     "min_order_size_usdt": "주문 하한(USDT)",
     "size_split_slots": "잔고÷슬롯",
+    "order_size_basis": "비율 기준",
     "leverage": "레버리지",
+    "margin_mode": "마진 모드",
     "stop_loss_pct": "손절(%)",
     "take_profit_pct": "익절(%)",
     "trailing_stop": "트레일링",
@@ -29,6 +31,7 @@ _LABELS: dict[str, str] = {
     "position_side": "진입 방향",
     "min_score": "최소 점수",
     "backtest_auto_settings": "백테스트 자동설정",
+    "backtest_auto_sl_tp": "백테스트 SL/TP 자동",
     "backtest_interval_minutes": "백테스트 주기(분)",
     "paper_initial_balance": "모의 초기자금",
     "okx_flag": "OKX API 환경",
@@ -45,6 +48,8 @@ def _fmt_val(key: str, val: Any) -> str:
         return "데모" if str(val) == "1" else "실거래 API"
     if key == "backtest_auto_settings":
         return "유동(자동)" if val else "수동(고정)"
+    if key == "backtest_auto_sl_tp":
+        return "자동(이력+그리드)" if val else "수동(고정)"
     if key == "position_size_mode":
         m = {
             "fixed": "고정 USDT",
@@ -54,6 +59,10 @@ def _fmt_val(key: str, val: Any) -> str:
         return m.get(str(val), str(val))
     if key == "size_split_slots":
         return "켜짐" if val else "꺼짐"
+    if key == "order_size_basis":
+        return "증거금 %" if val == "margin" else "명목(포지션) %"
+    if key == "margin_mode":
+        return "격리(Isolated)" if val == "isolated" else "교차(Cross)"
     if key == "strategy_mode":
         m = {"scalp": "단타", "swing": "장타", "both": "단타+장타"}
         return m.get(str(val), str(val))

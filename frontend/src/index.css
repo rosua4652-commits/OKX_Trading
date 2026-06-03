@@ -69,6 +69,47 @@ header .build {
 .ts-cell { font-size: 0.8rem; color: #8b949e; white-space: nowrap; }
 
 .backtest-panel { margin-bottom: 24px; }
+.bt-err-hint { font-size: 0.7rem; color: #f85149; }
+
+.portfolio-alloc { margin-bottom: 20px; }
+.alloc-layout {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 20px;
+  align-items: start;
+}
+@media (max-width: 800px) {
+  .alloc-layout { grid-template-columns: 1fr; }
+}
+.alloc-chart-wrap { text-align: center; }
+.alloc-pie { width: 180px; height: 180px; display: block; margin: 0 auto; }
+.alloc-summary-mini {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+  font-size: 0.8rem;
+  color: #8b949e;
+}
+.alloc-summary-mini strong { color: #e6edf3; }
+.alloc-legend { margin-bottom: 12px; }
+.alloc-legend-row {
+  display: grid;
+  grid-template-columns: 12px 1fr auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 0;
+  font-size: 0.85rem;
+  border-bottom: 1px solid #21262d;
+}
+.alloc-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.alloc-name { color: #e6edf3; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.alloc-amt { color: #c9d1d9; font-variant-numeric: tabular-nums; }
+.alloc-pct { color: #58a6ff; font-variant-numeric: tabular-nums; min-width: 42px; text-align: right; }
+.alloc-table { width: 100%; font-size: 0.85rem; margin-top: 8px; }
+.alloc-table th { color: #8b949e; font-weight: 500; }
+.alloc-hint { font-size: 0.75rem; color: #6e7681; margin-top: 10px; }
+
 .backtest-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -340,6 +381,54 @@ th { color: #8b949e; font-weight: 500; }
   color: #58a6ff;
 }
 .settings-hint.order-size-preview strong { color: #3fb950; }
+.order-size-breakdown { grid-column: 1 / -1; margin: 4px 0 8px; }
+.order-size-steps {
+  margin: 8px 0 8px 20px;
+  font-size: 0.8rem;
+  color: #8b949e;
+  line-height: 1.5;
+}
+.order-size-note {
+  font-size: 0.75rem;
+  color: #6e7681;
+  margin-top: 6px;
+  line-height: 1.45;
+}
+.order-size-preset-box {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  background: #161b22;
+  font-size: 0.8rem;
+  color: #c9d1d9;
+  line-height: 1.5;
+}
+.order-size-preset-box ol { margin: 8px 0 8px 20px; }
+.order-size-preset-box strong { color: #58a6ff; }
+.order-size-preset-result { color: #8b949e; margin-top: 8px; }
+.preset-link {
+  margin-left: 8px;
+  padding: 2px 8px;
+  font-size: 0.72rem;
+  background: #238636;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.preset-link:hover { background: #2ea043; }
+.preset-link-block {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 6px 12px;
+  font-size: 0.78rem;
+}
+.order-size-preset-desc {
+  margin: 6px 0 0;
+  color: #8b949e;
+  font-size: 0.75rem;
+}
 .settings-save-row {
   display: flex;
   align-items: center;
@@ -521,45 +610,55 @@ button.reset-paper:hover { background: #d2992222; }
   background: rgba(0, 0, 0, 0.75);
   z-index: 1000;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
-  padding: 16px;
+  padding: max(16px, 4vh) 16px 16px;
+  overflow: auto;
 }
 .chart-modal {
   background: #161b22;
   border: 1px solid #30363d;
   border-radius: 12px;
-  width: min(1100px, 96vw);
-  max-height: 92vh;
-  overflow: auto;
+  max-height: 96vh;
+  overflow: hidden;
   padding: 16px;
+  box-sizing: border-box;
 }
 .chart-modal-resizable {
   position: relative;
   display: flex;
   flex-direction: column;
-  resize: both;
-  overflow: hidden;
   min-width: 520px;
   min-height: 480px;
   max-width: 98vw;
   max-height: 96vh;
-  width: min(1100px, 92vw);
-  height: min(780px, 88vh);
 }
 .chart-modal-resizable .chart-modal-body {
   flex: 1;
   min-height: 280px;
   overflow: hidden;
 }
-.chart-modal-resize-hint {
+.chart-modal-resize-handle {
   position: absolute;
-  right: 10px;
-  bottom: 6px;
-  font-size: 0.7rem;
+  right: 0;
+  bottom: 0;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.65rem;
   color: #8b949e;
-  pointer-events: none;
+  cursor: nwse-resize;
   user-select: none;
+  touch-action: none;
+  z-index: 5;
+  background: linear-gradient(135deg, transparent 50%, #30363d 50%);
+  border-radius: 0 0 10px 0;
+}
+.chart-modal-resize-handle:hover {
+  color: #58a6ff;
+  background: linear-gradient(135deg, transparent 45%, #1f6feb55 45%);
 }
 .chart-modal-header {
   display: flex;

@@ -23,8 +23,8 @@ import {
   ChartModal,
   type ChartViewTarget,
 } from "./ChartModal";
-import { fmtNum, fmtPrice, fmtSlTpCell, fmtVolumeUsdt } from "./format";
-import { previewOrderSizeUsdt, positionSizeModeLabel } from "./orderSize";
+import { fmtNum, fmtPrice, fmtUsd, fmtVolumeUsdt } from "./format";
+import { describeBalancePctEntry, explainOrderSize, marginModeLabel, orderSizeBasisLabel, positionSizeModeLabel } from "./orderSize";
 import {
   chartStrategyKey,
   scalpEnabled,
@@ -33,6 +33,7 @@ import {
   swingEnabled,
 } from "./strategy";
 import { BacktestPanel } from "./BacktestPanel";
+import { AssetAllocationPanel } from "./AssetAllocation";
 import { PositionSlTpEditor } from "./PositionSlTpEditor";
 import { RsiGauge } from "./Sparkline";
 import type { AppConfig, CoinCandidate, Position, StatusData, TradeRecord } from "./types";
@@ -88,8 +89,18 @@ function App() {
 
   const { portfolio, bot, candidates } = data;
   const running = bot.status.running;
+  const nextOrderDetailRaw = data.next_order_size_detail;
+  const nextOrderComputed = explainOrderSize(config, portfolio);
   const nextOrderUsdt =
-    data.next_order_size_usdt ?? previewOrderSizeUsdt(config, portfolio);
+    data.next_order_size_usdt ?? nextOrderComputed.notionalUsdt;
+  const nextOrderMargin =
+    nextOrderDetailRaw?.margin_usdt ?? nextOrderComputed.marginUsdt;
+  const nextOrderSteps =
+    nextOrderDetailRaw?.steps ?? nextOrderComputed.steps;
+  const balancePctGuide = describeBalancePctEntry(config, portfolio);
+
+  const isPaper = config.trade_mode === "paper";
+  const moneyTag = isPaper ? "USD · 모의" : "USD";
 
   const patchConfig = (patch: Partial<AppConfig>) => {
     lockConfigEdits();
@@ -269,13 +280,13 @@ function App() {
                 초기자금 $
                 <input
                   type="number"
-                  min={100}
-                  step={100}
+                  min={1}
+                  step={1}
                   value={config.paper_initial_balance ?? 10000}
                   onChange={(e) => {
                     const n = Number(e.target.value);
-                    if (!Number.isFinite(n)) return;
-                    patchConfig({ paper_initial_balance: Math.max(100, n) });
+                    if (!Number.isFinite(n) || n <= 0) return;
+                    patchConfig({ paper_initial_balance: n });
                   }}
                   onClick={(e) => e.stopPropagation()}
                 />
@@ -354,37 +365,37 @@ function App() {
               </select>
             </div>
             <div className="settings-row">
-              <label>모의투자 초기 자금</label>
+              <label>모의투자 초기 자금 (USD, 제한 없음)</label>
               <input
                 type="number"
-                min={100}
-                step={100}
+                min={1}
+                step={1}
                 value={config.paper_initial_balance ?? 10000}
                 onChange={(e) => {
                   const n = Number(e.target.value);
-                  if (!Number.isFinite(n)) return;
-                  patchConfig({ paper_initial_balance: Math.max(100, n) });
+                  if (!Number.isFinite(n) || n <= 0) return;
+                  patchConfig({ paper_initial_balance: n });
                 }}
               />
+              <p className="settings-hint" style={{ gridColumn: "1 / -1", fontSize: "0.75rem" }}>
+                100만·1000만 등 원하는 금액 입력 후 「설정 저장」→「모의투자 초기화」로 반영.
+                USDT-M 선물과 동일하게 1 USD ≈ 1 USDT로 계산합니다.
+              </p>
             </div>
             <div className="settings-row">
-              <label>
-                주문 크기 방식
-                {config.backtest_auto_settings ? " (자동→가용%)" : ""}
-              </label>
+              <label>주문 크기 방식</label>
               <select
                 value={config.position_size_mode || "fixed"}
-                disabled={!!config.backtest_auto_settings}
                 onChange={(e) => patchConfig({ position_size_mode: e.target.value })}
               >
-                <option value="fixed">고정 USDT</option>
+                <option value="fixed">고정 USD</option>
                 <option value="pct_available">가용 잔고 %</option>
                 <option value="pct_equity">총자산(Equity) %</option>
               </select>
             </div>
             {(config.position_size_mode || "fixed") === "fixed" ? (
               <div className="settings-row">
-                <label>주문 금액 (USDT)</label>
+                <label>주문 금액 (USD)</label>
                 <input
                   type="number"
                   value={config.order_size_usdt}
@@ -404,7 +415,20 @@ function App() {
                   />
                 </div>
                 <div className="settings-row">
-                  <label>잔고÷남은슬롯 후 %</label>
+                  <label>비율 기준</label>
+                  <select
+                    value={config.order_size_basis || "notional"}
+                    onChange={(e) => patchConfig({ order_size_basis: e.target.value })}
+                    title="명목=포지션 크기(USD), 증거금=실제 묶이는 USD"
+                  >
+                    <option value="notional">명목(포지션 크기) %</option>
+                    <option value="margin">증거금 %</option>
+                  </select>
+                </div>
+                <div className="settings-row">
+                  <label title="남은 포지션 슬롯으로 나눈 뒤 % 적용 (전체 30%와 다름)">
+                    잔고÷남은슬롯 후 %
+                  </label>
                   <input
                     type="checkbox"
                     checked={!!config.size_split_slots}
@@ -414,7 +438,7 @@ function App() {
               </>
             )}
             <div className="settings-row">
-              <label>주문 상한 (USDT, 0=무제한)</label>
+              <label>주문 상한 (USD, 0=무제한)</label>
               <input
                 type="number"
                 min={0}
@@ -422,30 +446,165 @@ function App() {
                 onChange={(e) => patchConfig({ max_order_size_usdt: Number(e.target.value) })}
               />
             </div>
-            <p className="settings-hint order-size-preview">
-              다음 진입 약 <strong>${nextOrderUsdt.toLocaleString()}</strong>
-              ({positionSizeModeLabel(config.position_size_mode)}
-              {config.position_size_mode !== "fixed" && ` ${config.order_size_pct ?? 2}%`}
-              , 레버 {config.leverage}x → 증거금 약 $
-              {(nextOrderUsdt / Math.max(1, config.leverage)).toLocaleString(undefined, { maximumFractionDigits: 0 })})
-            </p>
+            <div className="order-size-breakdown">
+              <p className="settings-hint order-size-preview">
+                다음 진입: <strong>명목 ${nextOrderUsdt.toLocaleString()}</strong>
+                {" · "}
+                <strong>증거금 ${Math.round(nextOrderMargin).toLocaleString()}</strong>
+                {" "}
+                (레버 {config.leverage}x · {marginModeLabel(config.margin_mode)})
+              </p>
+              <ol className="order-size-steps">
+                {nextOrderSteps.map((step, i) => (
+                  <li key={i}>{step}</li>
+                ))}
+              </ol>
+              {config.size_split_slots && (
+                <p className="order-size-note">
+                  「잔고÷남은슬롯」이 켜져 있으면 <strong>전체 자금의 {config.order_size_pct}%가 아니라</strong>,
+                  남은 슬롯 1개분에 {config.order_size_pct}%가 적용됩니다.
+                  전체 가용의 {config.order_size_pct}%를 쓰려면 이 체크를 끄세요.
+                </p>
+              )}
+              {config.order_size_basis === "margin" ? (
+                <p className="order-size-note">
+                  비율 기준=증거금 % →{" "}
+                  {config.position_size_mode === "pct_equity" ? "총자산" : "가용"}×
+                  {config.order_size_pct}%가 증거금, ×레버가 명목입니다.
+                </p>
+              ) : (
+                <p className="order-size-note">
+                  비율 기준=명목 % →{" "}
+                  {config.position_size_mode === "pct_equity" ? "총자산" : "가용"}×
+                  {config.order_size_pct}%가 포지션 크기, ÷레버가 증거금입니다.
+                </p>
+              )}
+              <div className="order-size-preset-box">
+                <strong>📱 OKX 주문창 Amount % 슬라이더와 동일하게</strong>
+                <p className="order-size-preset-desc">
+                  OKX: 가용(Available) × % = 증거금(Cost) → × 레버 = Max buy(명목)
+                </p>
+                <button
+                  type="button"
+                  className="preset-link preset-link-block"
+                  onClick={() =>
+                    patchConfig({
+                      position_size_mode: "pct_available",
+                      order_size_basis: "margin",
+                      size_split_slots: false,
+                      margin_mode: "isolated",
+                    })
+                  }
+                >
+                  OKX 방식 적용 (가용 % + 증거금 % + 격리)
+                </button>
+                <p className="order-size-preset-result">
+                  가용 ${Math.round(portfolio.available).toLocaleString()} · {config.order_size_pct ?? 20}% →
+                  증거금 ${Math.round(portfolio.available * ((config.order_size_pct ?? 20) / 100)).toLocaleString()}
+                  {" · "}
+                  명목 ${Math.round(
+                    portfolio.available * ((config.order_size_pct ?? 20) / 100) * (config.leverage || 1),
+                  ).toLocaleString()}{" "}
+                  (레버 {config.leverage}x)
+                </p>
+              </div>
+              <div className="order-size-preset-box">
+                <strong>💡 총자산(Equity) 기준 {config.order_size_pct ?? 20}%로 1회 진입</strong>
+                <ol>
+                  <li>
+                    주문 크기 방식 → <strong>총자산(Equity) %</strong>
+                    {(config.position_size_mode || "fixed") !== "pct_equity" && (
+                      <button
+                        type="button"
+                        className="preset-link"
+                        onClick={() =>
+                          patchConfig({ position_size_mode: "pct_equity" })
+                        }
+                      >
+                        적용
+                      </button>
+                    )}
+                  </li>
+                  <li>
+                    비율 기준 → <strong>증거금 %</strong> (잔고의 20%를 증거금으로) 또는{" "}
+                    <strong>명목 %</strong> (잔고의 20%가 포지션 크기)
+                  </li>
+                  <li>
+                    「잔고÷남은슬롯」 → <strong>체크 해제</strong>
+                    {config.size_split_slots && (
+                      <button
+                        type="button"
+                        className="preset-link"
+                        onClick={() => patchConfig({ size_split_slots: false })}
+                      >
+                        끄기
+                      </button>
+                    )}
+                  </li>
+                  <li>비율 → <strong>{config.order_size_pct ?? 20}%</strong></li>
+                </ol>
+                <p className="order-size-preset-result">
+                  현재 총자산 ${Math.round(portfolio.equity).toLocaleString()} 기준 예시 —{" "}
+                  {balancePctGuide.title}
+                  <br />
+                  {balancePctGuide.lines.join(" · ")}
+                </p>
+              </div>
+            </div>
             <div className="settings-row">
               <label>레버리지</label>
               <input type="number" value={config.leverage}
                 onChange={(e) => patchConfig({ leverage: Number(e.target.value) })} />
             </div>
+            {config.instrument_type !== "spot" && (
+              <div className="settings-row">
+                <label>마진 모드</label>
+                <select
+                  value={config.margin_mode || "isolated"}
+                  onChange={(e) => patchConfig({ margin_mode: e.target.value })}
+                >
+                  <option value="isolated">격리 (Isolated) — 종목별 증거금 분리</option>
+                  <option value="cross">교차 (Cross) — 계정 잔고 공유</option>
+                </select>
+              </div>
+            )}
             <div className="settings-row">
               <label>손절 % (SL)</label>
               <input type="number" step="0.1" value={config.stop_loss_pct}
+                disabled={!!config.backtest_auto_sl_tp}
+                title={config.backtest_auto_sl_tp ? "백테스트 SL/TP 자동이 켜져 있어 백테스트 결과로 갱신됩니다" : ""}
                 onChange={(e) => patchConfig({ stop_loss_pct: Number(e.target.value) })} />
             </div>
             <div className="settings-row">
               <label>익절 % (TP)</label>
               <input type="number" step="0.1" value={config.take_profit_pct}
+                disabled={!!config.backtest_auto_sl_tp}
+                title={config.backtest_auto_sl_tp ? "백테스트 SL/TP 자동이 켜져 있어 백테스트 결과로 갱신됩니다" : ""}
                 onChange={(e) => patchConfig({ take_profit_pct: Number(e.target.value) })} />
+            </div>
+            <div className="settings-row settings-check-block">
+              <label className="settings-check">
+                <input
+                  type="checkbox"
+                  checked={!!config.backtest_auto_sl_tp}
+                  onChange={(e) =>
+                    patchConfig({ backtest_auto_sl_tp: e.target.checked })
+                  }
+                />
+                <span>
+                  <strong>백테스트 SL/TP 자동 (승률 우선)</strong>
+                  <br />
+                  <span className="settings-check-desc">
+                    체크 시: 종목별 백테스트 SL/TP 프로필을 자동매매 진입에 적용합니다.
+                    (예: SHIB 1.5% 익절·승률 82% 구간) — ATR 대신 백테스트 최적값 사용.
+                    프로필은 backend/data/symbol_sl_tp_profiles.json 에 누적됩니다.
+                  </span>
+                </span>
+              </label>
             </div>
             <p style={{ fontSize: "0.8rem", color: "#8b949e", gridColumn: "1 / -1" }}>
               단타 기본 SL {config.stop_loss_pct}% / TP {config.take_profit_pct}%
+              {config.backtest_auto_sl_tp && " (자동 — 백테스트 완료 시 갱신)"}
               {config.strategy_mode === "swing" && " (장타: 차트 ATR·고저 — 넓은 구간 자동)"}
               {config.strategy_mode === "both" &&
                 " (단타·장타 동시, SL/TP는 종목별 차트 변동성·구조로 자동)"}
@@ -480,8 +639,8 @@ function App() {
                   <strong>백테스트 유동 설정 (자동)</strong>
                   <br />
                   <span className="settings-check-desc">
-                    체크 시: 백테스트가 끝날 때마다 추천 min_score·가용잔고 % 주문이 자동 반영됩니다.
-                    「추천 점수 적용」 버튼 없이 봇이 그 설정으로 진입합니다.
+                    체크 시: 백테스트가 끝날 때마다 추천 min_score만 자동 반영됩니다.
+                    주문 크기(총자산 %·비율 등)는 위 설정을 그대로 사용합니다.
                   </span>
                 </span>
               </label>
@@ -574,17 +733,17 @@ function App() {
 
       <div className="grid">
         <div className="card">
-          <h3>자산 (Equity){config.trade_mode === "live" ? " · OKX" : ""}</h3>
-          <div className="value">${fmtNum(portfolio.equity)}</div>
+          <h3>자산 (Equity · {moneyTag}){config.trade_mode === "live" ? " · OKX" : ""}</h3>
+          <div className="value">{fmtUsd(portfolio.equity, 2)}</div>
         </div>
         <div className="card">
-          <h3>가용 잔고{config.trade_mode === "live" ? " · OKX" : ""}</h3>
-          <div className="value">${fmtNum(portfolio.available)}</div>
+          <h3>가용 잔고 ({moneyTag}){config.trade_mode === "live" ? " · OKX" : ""}</h3>
+          <div className="value">{fmtUsd(portfolio.available, 2)}</div>
         </div>
         <div className="card">
-          <h3>1회 주문 규모</h3>
+          <h3>1회 주문 규모 (USD)</h3>
           <div className="value" style={{ fontSize: "1.1rem" }}>
-            ${fmtNum(nextOrderUsdt, 0)}
+            {fmtUsd(nextOrderUsdt, 0)}
           </div>
           <div style={{ fontSize: "0.75rem", color: "#8b949e", marginTop: 4 }}>
             {positionSizeModeLabel(config.position_size_mode)}
@@ -594,13 +753,13 @@ function App() {
         <div className="card">
           <h3>미실현 PnL</h3>
           <div className={`value ${portfolio.unrealized_pnl >= 0 ? "positive" : "negative"}`}>
-            {portfolio.unrealized_pnl >= 0 ? "+" : ""}{fmtNum(portfolio.unrealized_pnl)}
+            {portfolio.unrealized_pnl >= 0 ? "+" : ""}{fmtUsd(portfolio.unrealized_pnl, 2)}
           </div>
         </div>
         <div className="card">
           <h3>실현 PnL / 승률</h3>
           <div className={`value ${portfolio.realized_pnl >= 0 ? "positive" : "negative"}`}>
-            {portfolio.realized_pnl >= 0 ? "+" : ""}{fmtNum(portfolio.realized_pnl)}
+            {portfolio.realized_pnl >= 0 ? "+" : ""}{fmtUsd(portfolio.realized_pnl, 2)}
           </div>
           <div style={{ fontSize: "0.875rem", color: "#8b949e", marginTop: 4 }}>
             {portfolio.trade_count}건 / 승률 {portfolio.win_rate}%
@@ -633,6 +792,13 @@ function App() {
         </div>
       </div>
 
+      <AssetAllocationPanel
+        portfolio={portfolio}
+        defaultLeverage={config.leverage}
+        tradeMode={config.trade_mode}
+        moneyTag={moneyTag}
+      />
+
       <div className="section">
         <h2>보유 포지션 ({portfolio.positions.length}) — 행 클릭 또는 「차트」</h2>
         {portfolio.positions.length === 0 ? (
@@ -647,6 +813,7 @@ function App() {
                 <th>수량</th>
                 <th>진입가</th>
                 <th>현재가</th>
+                <th>명목</th>
                 <th>PnL</th>
                 <th>SL / TP</th>
                 <th>전략</th>
@@ -672,6 +839,14 @@ function App() {
                   <td>{fmtNum(p.quantity, 4)}</td>
                   <td>${fmtPrice(p.entry_price)}</td>
                   <td>${fmtPrice(p.current_price)}</td>
+                  <td className="muted" title="포지션 명목 가치">
+                    ${fmtNum(
+                      p.notional_usdt && p.notional_usdt > 0
+                        ? p.notional_usdt
+                        : p.quantity * (p.current_price || p.entry_price),
+                      0,
+                    )}
+                  </td>
                   <td className={p.unrealized_pnl >= 0 ? "positive" : "negative"}>
                     {p.unrealized_pnl >= 0 ? "+" : ""}{fmtNum(p.unrealized_pnl)} ({fmtNum(p.unrealized_pnl_pct, 1)}%)
                   </td>

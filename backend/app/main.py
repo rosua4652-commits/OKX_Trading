@@ -40,6 +40,7 @@ from app.backtest.runner import (
     start_background_loop,
     stop_background_loop,
 )
+from app.backtest.symbol_sl_tp import profiles_for_client
 from app.config_public import config_for_client, merge_config_update
 from app.engine.portfolio_store import store
 from app.storage.user_settings import load_settings, save_settings
@@ -132,20 +133,31 @@ async def version():
 async def status():
     data = await engine.get_status()
     data["build"] = OAT_BUILD
-    from app.order_sizing import resolve_order_size_usdt
+    from app.order_sizing import resolve_order_size_detail, resolve_order_size_usdt
 
     ps = engine.portfolio.snapshot()
-    data["next_order_size_usdt"] = resolve_order_size_usdt(
+    size_detail = resolve_order_size_detail(
         engine.config,
         ps,
         open_positions=len(ps.positions),
     )
+    data["next_order_size_usdt"] = size_detail.notional_usdt
+    data["next_order_size_detail"] = {
+        "notional_usdt": size_detail.notional_usdt,
+        "margin_usdt": size_detail.margin_usdt,
+        "leverage": size_detail.leverage,
+        "summary": size_detail.summary,
+        "steps": size_detail.steps,
+        "slots_remaining": size_detail.slots_remaining,
+        "order_size_basis": size_detail.order_size_basis,
+    }
     bt = backtest_status()
     latest = get_latest()
     data["backtest"] = {
         "status": bt.model_dump(),
         "result": latest.model_dump() if latest else None,
-        "history": get_history(20),
+        "history": get_history(50),
+        "symbol_profiles": profiles_for_client(),
         "auto_run": app_settings.backtest_auto_run,
         "interval_sec": interval_seconds(engine.config),
         "interval_minutes": engine.config.backtest_interval_minutes,
@@ -250,6 +262,8 @@ class PaperResetRequest(BaseModel):
 @api.post("/paper/reset")
 async def reset_paper(req: PaperResetRequest = PaperResetRequest()):
     bal = req.initial_balance if req.initial_balance is not None else engine.config.paper_initial_balance
+    if bal is None or bal <= 0:
+        return {"ok": False, "message": "초기자금은 0보다 커야 합니다"}
     try:
         bal = await engine.reset_paper_portfolio(bal)
         save_settings(engine.config)
@@ -413,13 +427,27 @@ async def backtest_apply():
         if not latest.recommendation:
             return {"ok": False, "message": "추천 없음"}
         updated = engine.config.model_copy(deep=True)
-        updated.min_score = float(latest.recommendation.min_score)
+        rec = latest.recommendation
+        updated.min_score = float(rec.min_score)
+        if rec.stop_loss_pct > 0:
+            updated.stop_loss_pct = float(rec.stop_loss_pct)
+        if rec.take_profit_pct > 0:
+            updated.take_profit_pct = float(rec.take_profit_pct)
     engine.apply_config(updated, "백테스트 추천 적용")
     save_settings(engine.config)
+    rec = latest.recommendation
+    msg_parts = [f"min_score={engine.config.min_score}"]
+    if rec and rec.stop_loss_pct > 0:
+        msg_parts.append(f"SL {engine.config.stop_loss_pct}%")
+    if rec and rec.take_profit_pct > 0:
+        msg_parts.append(f"TP {engine.config.take_profit_pct}%")
+    msg_parts.append(f"주문={engine.config.position_size_mode}")
     return {
         "ok": True,
-        "message": f"min_score={engine.config.min_score}, 주문={engine.config.position_size_mode}",
+        "message": ", ".join(msg_parts),
         "min_score": engine.config.min_score,
+        "stop_loss_pct": engine.config.stop_loss_pct,
+        "take_profit_pct": engine.config.take_profit_pct,
         "config": config_for_client(engine.config),
     }
 

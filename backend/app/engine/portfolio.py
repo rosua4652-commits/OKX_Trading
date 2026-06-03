@@ -68,8 +68,8 @@ class PortfolioManager:
 
     def reset(self, initial_balance: float | None = None) -> None:
         bal = initial_balance if initial_balance is not None else settings.initial_balance
-        if bal < 100:
-            bal = 100.0
+        if bal <= 0:
+            bal = settings.initial_balance if settings.initial_balance > 0 else 10_000.0
         self.balance = bal
         self.available = bal
         self.realized_pnl = 0.0

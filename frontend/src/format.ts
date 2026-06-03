@@ -5,6 +5,12 @@ export function fmtNum(n: number, digits = 2) {
   });
 }
 
+/** 모의·실거래 공통 달러(USDT-M ≈ USD) 표시 */
+export function fmtUsd(n: number, digits = 2) {
+  if (!Number.isFinite(n)) return "—";
+  return `$${fmtNum(n, digits)}`;
+}
+
 /** Low-price coins (PEPE 등) — 과학적 표기(e-6) 없이 소수로 표시 */
 export function fmtPrice(n: number) {
   if (!Number.isFinite(n) || n <= 0) return "—";
