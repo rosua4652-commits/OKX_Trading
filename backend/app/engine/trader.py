@@ -405,7 +405,10 @@ class TradingEngine:
         pos = self.portfolio.positions.get(inst_id)
         if not pos:
             return False
-        price = pos.current_price
+        prices = await self.prices_map()
+        price = prices.get(inst_id) or pos.current_price
+        if price <= 0:
+            price = pos.current_price
 
         if self._is_live() and self._has_keys():
             ok, msg = await live_close(self.config, inst_id, pos.side, pos.quantity)

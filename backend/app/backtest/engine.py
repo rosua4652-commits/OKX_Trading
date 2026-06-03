@@ -23,6 +23,7 @@ from app.models import (
 from app.strategy_utils import active_strategies, sl_tp_pcts
 from app.backtest.candles_util import build_symbol_charts
 from app.backtest.models import (
+    BacktestDirectionTrial,
     BacktestLogEntry,
     BacktestMetrics,
     BacktestRecommendation,
@@ -30,6 +31,9 @@ from app.backtest.models import (
     BacktestScoreTrial,
     BacktestTrade,
 )
+
+SCORE_GRID = [45.0, 50.0, 55.0, 60.0, 65.0, 70.0]
+WINDOW_RATIOS = [1.0, 0.75, 0.5]
 
 
 def _utc_now() -> str:
@@ -112,6 +116,79 @@ def _build_candidate(
     )
 
 
+def _slice_candles(candles: list[list], window_ratio: float) -> list[list]:
+    if window_ratio >= 0.99 or len(candles) < 80:
+        return candles
+    keep = max(70, int(len(candles) * window_ratio))
+    return candles[-keep:]
+
+
+def _flip_side(side: PositionSide | None) -> PositionSide | None:
+    if side == PositionSide.LONG:
+        return PositionSide.SHORT
+    if side == PositionSide.SHORT:
+        return PositionSide.LONG
+    return None
+
+
+def _record_close(
+    sim: _SimPos,
+    inst_id: str,
+    price: float,
+    bar_i: int,
+    state: _SimState,
+    logs: list[BacktestLogEntry],
+    reason: str,
+) -> None:
+    fee = sim.notional * settings.trading_fee_pct / 100 * 2
+    if sim.side == PositionSide.LONG:
+        pnl = sim.notional * (price - sim.entry_price) / sim.entry_price
+    else:
+        pnl = sim.notional * (sim.entry_price - price) / sim.entry_price
+    pnl -= fee
+    pnl_pct = pnl / sim.notional * 100 if sim.notional > 0 else 0
+    state.trades.append(
+        BacktestTrade(
+            inst_id=inst_id,
+            side=sim.side.value,
+            strategy=sim.strategy.value,
+            entry_bar=sim.entry_bar,
+            exit_bar=bar_i,
+            entry_price=sim.entry_price,
+            exit_price=price,
+            score=sim.score,
+            sl_pct=sim.sl_pct,
+            tp_pct=sim.tp_pct,
+            pnl_usdt=round(pnl, 2),
+            pnl_pct=round(pnl_pct, 2),
+            exit_reason=reason,
+        )
+    )
+    state.equity += pnl
+    logs.append(
+        BacktestLogEntry(
+            ts=_utc_now(),
+            level="info",
+            message=f"{inst_id} 청산 {reason} PnL {pnl:+.2f}",
+        )
+    )
+
+
+def _close_open_positions(
+    symbol_candles: dict[str, list[list]],
+    state: _SimState,
+    logs: list[BacktestLogEntry],
+) -> None:
+    for iid, sim in list(state.positions.items()):
+        candles = symbol_candles.get(iid)
+        if not candles:
+            continue
+        last_i = len(candles) - 1
+        price = float(candles[last_i][4])
+        _record_close(sim, iid, price, last_i, state, logs, "백테스트 종료 청산")
+        del state.positions[iid]
+
+
 def _sl_tp_prices(entry: float, side: PositionSide, sl_pct: float, tp_pct: float) -> tuple[float, float]:
     sl_r, tp_r = sl_pct / 100, tp_pct / 100
     if side == PositionSide.LONG:
@@ -166,6 +243,7 @@ def simulate_symbol(
     state: _SimState,
     logs: list[BacktestLogEntry],
     min_score_override: float | None = None,
+    invert_signals: bool = False,
 ) -> int:
     if len(candles) < 70:
         logs.append(BacktestLogEntry(ts=_utc_now(), level="warn", message=f"{inst_id}: 캔들 부족"))
@@ -192,39 +270,8 @@ def simulate_symbol(
             pos = _to_position(sim, price, cfg)
             exit_flag, reason = should_exit(pos, cfg)
             if exit_flag:
-                fee = sim.notional * settings.trading_fee_pct / 100 * 2
-                if sim.side == PositionSide.LONG:
-                    pnl = sim.notional * (price - sim.entry_price) / sim.entry_price
-                else:
-                    pnl = sim.notional * (sim.entry_price - price) / sim.entry_price
-                pnl -= fee
-                pnl_pct = pnl / sim.notional * 100 if sim.notional > 0 else 0
-                state.trades.append(
-                    BacktestTrade(
-                        inst_id=inst_id,
-                        side=sim.side.value,
-                        strategy=sim.strategy.value,
-                        entry_bar=sim.entry_bar,
-                        exit_bar=i,
-                        entry_price=sim.entry_price,
-                        exit_price=price,
-                        score=sim.score,
-                        sl_pct=sim.sl_pct,
-                        tp_pct=sim.tp_pct,
-                        pnl_usdt=round(pnl, 2),
-                        pnl_pct=round(pnl_pct, 2),
-                        exit_reason=reason,
-                    )
-                )
-                state.equity += pnl
+                _record_close(sim, inst_id, price, i, state, logs, reason)
                 del state.positions[iid]
-                logs.append(
-                    BacktestLogEntry(
-                        ts=_utc_now(),
-                        level="info",
-                        message=f"{inst_id} 청산 {reason} PnL {pnl:+.2f}",
-                    )
-                )
 
         if inst_id in state.positions:
             sim = state.positions[inst_id]
@@ -240,6 +287,8 @@ def simulate_symbol(
         for strat in strat_list:
             cand = _build_candidate(inst_id, closes, volumes, i, strat)
             side = resolve_entry_side(cfg, cand)
+            if invert_signals:
+                side = _flip_side(side)
             if side is None:
                 continue
             snap = _portfolio_snap(state)
@@ -287,23 +336,33 @@ def run_simulation(
     symbol_candles: dict[str, list[list]],
     logs: list[BacktestLogEntry],
     min_score_override: float | None = None,
+    invert_signals: bool = False,
+    window_ratio: float = 1.0,
 ) -> tuple[_SimState, int]:
     state = _SimState(equity=config.paper_initial_balance or settings.initial_balance)
     total_bars = 0
-    for inst_id, candles in symbol_candles.items():
-        logs.append(
-            BacktestLogEntry(ts=_utc_now(), level="info", message=f"--- {inst_id} 시뮬레이션 ---")
-        )
-        total_bars += simulate_symbol(inst_id, candles, config, state, logs, min_score_override)
-
-    for iid, sim in list(state.positions.items()):
+    sliced: dict[str, list[list]] = {
+        iid: _slice_candles(c, window_ratio) for iid, c in symbol_candles.items()
+    }
+    for inst_id, candles in sliced.items():
         logs.append(
             BacktestLogEntry(
                 ts=_utc_now(),
-                level="warn",
-                message=f"{iid} 미청산 포지션 (백테스트 종료 시점)",
+                level="info",
+                message=f"--- {inst_id} 시뮬레이션 (봉 {len(candles)}, {'역방향' if invert_signals else '정방향'}) ---",
             )
         )
+        total_bars += simulate_symbol(
+            inst_id,
+            candles,
+            config,
+            state,
+            logs,
+            min_score_override,
+            invert_signals=invert_signals,
+        )
+
+    _close_open_positions(sliced, state, logs)
     return state, total_bars
 
 
@@ -336,50 +395,132 @@ def _metrics_from_state(state: _SimState, bars: int, start_equity: float) -> Bac
     )
 
 
-def optimize_min_score(
+def _trial_rank(pnl: float, win_rate: float, trades: int) -> float:
+    if trades < 1:
+        return -1e9
+    return pnl + win_rate * 0.35 + min(trades, 25) * 0.15
+
+
+def optimize_strategy(
     config: AppConfig,
     symbol_candles: dict[str, list[list]],
     logs: list[BacktestLogEntry],
 ) -> BacktestRecommendation:
-    candidates = [45.0, 50.0, 55.0, 60.0, 65.0, 70.0]
-    trials: list[BacktestScoreTrial] = []
-    best_score = config.min_score
-    best_pnl = float("-inf")
+    direction_trials: list[BacktestDirectionTrial] = []
+    score_trials: list[BacktestScoreTrial] = []
+    best_rank = float("-inf")
+    best: BacktestDirectionTrial | None = None
 
     logs.append(
-        BacktestLogEntry(ts=_utc_now(), level="info", message="최소 점수 그리드 탐색 시작")
+        BacktestLogEntry(
+            ts=_utc_now(),
+            level="info",
+            message="전략 탐색: 정방향/역방향 × 구간(100/75/50%) × min_score",
+        )
     )
-    for ms in candidates:
-        trial_logs: list[BacktestLogEntry] = []
-        state, _ = run_simulation(config, symbol_candles, trial_logs, min_score_override=ms)
-        pnl = sum(t.pnl_usdt for t in state.trades)
-        wins = sum(1 for t in state.trades if t.pnl_usdt > 0)
-        wr = wins / len(state.trades) * 100 if state.trades else 0
-        long_e = sum(1 for t in state.trades if t.side == "long")
-        short_e = sum(1 for t in state.trades if t.side == "short")
-        trials.append(
+
+    for mode in ("normal", "inverse"):
+        invert = mode == "inverse"
+        for wratio in WINDOW_RATIOS:
+            for ms in SCORE_GRID:
+                trial_logs: list[BacktestLogEntry] = []
+                state, _ = run_simulation(
+                    config,
+                    symbol_candles,
+                    trial_logs,
+                    min_score_override=ms,
+                    invert_signals=invert,
+                    window_ratio=wratio,
+                )
+                pnl = sum(t.pnl_usdt for t in state.trades)
+                wins = sum(1 for t in state.trades if t.pnl_usdt > 0)
+                win_r = wins / len(state.trades) * 100 if state.trades else 0.0
+                long_n = sum(1 for t in state.trades if t.side == "long")
+                short_n = sum(1 for t in state.trades if t.side == "short")
+                dt = BacktestDirectionTrial(
+                    mode=mode,
+                    window_ratio=wratio,
+                    min_score=ms,
+                    total_pnl=round(pnl, 2),
+                    win_rate=round(win_r, 1),
+                    trades=len(state.trades),
+                    long_trades=long_n,
+                    short_trades=short_n,
+                )
+                direction_trials.append(dt)
+                rank = _trial_rank(pnl, win_r, len(state.trades))
+                if rank > best_rank:
+                    best_rank = rank
+                    best = dt
+
+    if best is None:
+        best = BacktestDirectionTrial(
+            mode="normal",
+            window_ratio=1.0,
+            min_score=config.min_score,
+            total_pnl=0,
+            win_rate=0,
+            trades=0,
+        )
+
+    for ms in SCORE_GRID:
+        st_logs: list[BacktestLogEntry] = []
+        st, _ = run_simulation(
+            config,
+            symbol_candles,
+            st_logs,
+            min_score_override=ms,
+            invert_signals=best.mode == "inverse",
+            window_ratio=best.window_ratio,
+        )
+        pnl = sum(t.pnl_usdt for t in st.trades)
+        wins = sum(1 for t in st.trades if t.pnl_usdt > 0)
+        wr = wins / len(st.trades) * 100 if st.trades else 0
+        score_trials.append(
             BacktestScoreTrial(
                 min_score=ms,
                 total_pnl=round(pnl, 2),
                 win_rate=round(wr, 1),
-                trades=len(state.trades),
-                long_entries=long_e,
-                short_entries=short_e,
+                trades=len(st.trades),
+                long_entries=sum(1 for t in st.trades if t.side == "long"),
+                short_entries=sum(1 for t in st.trades if t.side == "short"),
             )
         )
-        logs.append(
-            BacktestLogEntry(
-                ts=_utc_now(),
-                level="info",
-                message=f"min_score={ms} → PnL {pnl:+.2f} 거래 {len(state.trades)}건",
-            )
-        )
-        if pnl > best_pnl or (pnl == best_pnl and len(state.trades) > 0):
-            best_pnl = pnl
-            best_score = ms
 
-    reason = f"그리드 탐색 결과 PnL 최대 min_score={best_score} (${best_pnl:+.2f})"
-    return BacktestRecommendation(min_score=best_score, reason=reason, trials=trials)
+    normal_best = max(
+        (t for t in direction_trials if t.mode == "normal" and t.trades > 0),
+        key=lambda t: _trial_rank(t.total_pnl, t.win_rate, t.trades),
+        default=None,
+    )
+    inverse_best = max(
+        (t for t in direction_trials if t.mode == "inverse" and t.trades > 0),
+        key=lambda t: _trial_rank(t.total_pnl, t.win_rate, t.trades),
+        default=None,
+    )
+
+    dir_reason = (
+        f"최적 {best.mode} 구간 {int(best.window_ratio * 100)}% "
+        f"min_score={best.min_score} PnL {best.total_pnl:+.2f} 승률 {best.win_rate}%"
+    )
+    if (
+        normal_best
+        and inverse_best
+        and normal_best.win_rate < 45
+        and inverse_best.win_rate >= normal_best.win_rate + 8
+    ):
+        dir_reason += (
+            f" | 정방향 승률 {normal_best.win_rate}% 낮음 → 역방향 {inverse_best.win_rate}% 우세"
+        )
+
+    return BacktestRecommendation(
+        min_score=best.min_score,
+        reason=dir_reason,
+        trials=score_trials,
+        direction=best.mode,
+        direction_reason=dir_reason,
+        direction_trials=direction_trials,
+        window_ratio=best.window_ratio,
+    )
 
 
 def build_result(
@@ -404,17 +545,29 @@ def build_result(
 
     recommendation = None
     if optimize:
-        recommendation = optimize_min_score(config, symbol_candles, logs)
+        recommendation = optimize_strategy(config, symbol_candles, logs)
         logs.append(
             BacktestLogEntry(
                 ts=_utc_now(),
                 level="ok",
-                message=f"추천 min_score={recommendation.min_score} — {recommendation.reason}",
+                message=(
+                    f"추천 {recommendation.direction} / min_score={recommendation.min_score} "
+                    f"/ 구간 {int(recommendation.window_ratio * 100)}% — {recommendation.reason}"
+                ),
             )
         )
 
+    invert_run = recommendation.direction == "inverse" if recommendation else False
+    window_run = recommendation.window_ratio if recommendation else 1.0
     min_run = recommendation.min_score if recommendation else config.min_score
-    state, bars = run_simulation(config, symbol_candles, logs, min_score_override=min_run)
+    state, bars = run_simulation(
+        config,
+        symbol_candles,
+        logs,
+        min_score_override=min_run,
+        invert_signals=invert_run,
+        window_ratio=window_run,
+    )
     metrics = _metrics_from_state(state, bars, start_equity)
 
     finished = _utc_now()
@@ -452,6 +605,9 @@ def build_result(
         params_snapshot={
             "min_score": config.min_score,
             "min_score_applied": min_run,
+            "direction": recommendation.direction if recommendation else "normal",
+            "window_ratio": window_run,
+            "invert_signals": invert_run,
             "max_positions": config.max_positions,
             "order_size_usdt": config.order_size_usdt,
             "position_side": config.position_side.value,

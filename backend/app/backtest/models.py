@@ -38,10 +38,25 @@ class BacktestScoreTrial(BaseModel):
     short_entries: int
 
 
+class BacktestDirectionTrial(BaseModel):
+    mode: str
+    window_ratio: float
+    min_score: float
+    total_pnl: float
+    win_rate: float
+    trades: int
+    long_trades: int = 0
+    short_trades: int = 0
+
+
 class BacktestRecommendation(BaseModel):
     min_score: float
     reason: str
     trials: list[BacktestScoreTrial] = Field(default_factory=list)
+    direction: str = "normal"
+    direction_reason: str = ""
+    direction_trials: list[BacktestDirectionTrial] = Field(default_factory=list)
+    window_ratio: float = 1.0
 
 
 class SymbolCandleChart(BaseModel):

@@ -104,6 +104,7 @@ class TradeRecord(BaseModel):
     close_type: str = ""
     position_side: str = ""
     entry_price: float = 0.0
+    exit_price: float = 0.0
     notional_usdt: float = 0.0
     strategy_mode: str = ""
     mode: TradeMode = TradeMode.PAPER

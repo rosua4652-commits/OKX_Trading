@@ -167,18 +167,32 @@ if ($LASTEXITCODE -ne 0) {
     Wait-Exit 1
 }
 
+Get-ChildItem (Join-Path $Root "backend") -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
+    ForEach-Object { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+
 $distIndex = Join-Path $Root "frontend\dist\index.html"
-if (-not (Test-Path $distIndex)) {
+$feRoot = Join-Path $Root "frontend"
+$needFeBuild = -not (Test-Path $distIndex)
+if (-not $needFeBuild -and (Test-Path $feRoot)) {
+    $distJs = Get-ChildItem (Join-Path $feRoot "dist\assets\*.js") -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    $srcNewest = Get-ChildItem (Join-Path $feRoot "src") -Recurse -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($srcNewest -and $distJs -and $srcNewest.LastWriteTime -gt $distJs.LastWriteTime) {
+        $needFeBuild = $true
+    }
+}
+if ($needFeBuild) {
     if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
         Write-Host "[ERROR] npm not found. Install Node.js 18+." -ForegroundColor Red
         Wait-Exit 1
     }
-    Write-Host "Building frontend (first run may take a few minutes) ..."
-    Push-Location (Join-Path $Root "frontend")
-    if ((Invoke-Quiet { npm install }) -ne 0) {
-        Pop-Location
-        Write-Host "[ERROR] npm install failed." -ForegroundColor Red
-        Wait-Exit 1
+    Write-Host "Building frontend ..."
+    Push-Location $feRoot
+    if (-not (Test-Path "node_modules")) {
+        if ((Invoke-Quiet { npm install }) -ne 0) {
+            Pop-Location
+            Write-Host "[ERROR] npm install failed." -ForegroundColor Red
+            Wait-Exit 1
+        }
     }
     if ((Invoke-Quiet { npm run build }) -ne 0) {
         Pop-Location

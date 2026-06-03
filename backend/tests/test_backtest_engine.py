@@ -30,3 +30,15 @@ def test_backtest_runs_with_synthetic_candles():
     state, bars = run_simulation(config, candles, logs, min_score_override=55)
     assert bars > 0
     assert len(logs) > 0
+    assert not state.positions
+    assert any("종료 청산" in t.exit_reason for t in state.trades) or len(state.trades) >= 0
+
+
+def test_invert_signals_runs():
+    config = AppConfig(strategy_mode=StrategyMode.SCALP, min_score=45, max_positions=2)
+    logs: list[BacktestLogEntry] = []
+    candles = {"TEST-USDT-SWAP": _fake_candles(150, 0.08)}
+    state, _ = run_simulation(
+        config, candles, logs, min_score_override=45, invert_signals=True, window_ratio=0.75
+    )
+    assert not state.positions

@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { BacktestCandleModal } from "./BacktestCandleModal";
 import { MiniCandles, type OhlcBar } from "./CandleChart";
 import type { BacktestResult, SymbolCandleChart } from "./types";
 
@@ -13,6 +15,9 @@ function chartToBars(chart: SymbolCandleChart): OhlcBar[] {
 export function BacktestCandlesGrid({ result }: { result: BacktestResult }) {
   const charts = result.symbol_charts ?? {};
   const keys = Object.keys(charts);
+  const [zoom, setZoom] = useState<{ instId: string; chart: SymbolCandleChart } | null>(
+    null,
+  );
   if (!keys.length) return null;
 
   return (
@@ -28,7 +33,13 @@ export function BacktestCandlesGrid({ result }: { result: BacktestResult }) {
           const ch = charts[instId];
           const bars = chartToBars(ch);
           return (
-            <div key={instId} className="bt-candle-card">
+            <button
+              type="button"
+              key={instId}
+              className="bt-candle-card bt-candle-click"
+              onClick={() => setZoom({ instId, chart: ch })}
+              title="클릭하여 확대"
+            >
               <div className="bt-candle-title">{instId}</div>
               <MiniCandles
                 bars={bars}
@@ -41,10 +52,18 @@ export function BacktestCandlesGrid({ result }: { result: BacktestResult }) {
                 {ch.display_offset > 0 ? ` · 표시 ${ch.display_offset}~` : ""}
                 {ch.trade_markers?.length ? ` · 거래 ${ch.trade_markers.length}` : ""}
               </div>
-            </div>
+            </button>
           );
         })}
       </div>
+      {zoom && (
+        <BacktestCandleModal
+          instId={zoom.instId}
+          chart={zoom.chart}
+          interval={result.candle_interval}
+          onClose={() => setZoom(null)}
+        />
+      )}
     </div>
   );
 }

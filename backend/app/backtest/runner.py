@@ -89,6 +89,12 @@ def _save_result(result: BacktestResult) -> None:
         "status": result.status,
         "strategy_mode": result.strategy_mode,
         "symbols": result.symbols,
+        "direction": (
+            result.recommendation.direction if result.recommendation else None
+        ),
+        "window_ratio": (
+            result.recommendation.window_ratio if result.recommendation else None
+        ),
         "metrics": result.metrics.model_dump() if result.metrics else {},
         "recommendation": (
             result.recommendation.model_dump() if result.recommendation else None

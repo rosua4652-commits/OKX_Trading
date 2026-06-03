@@ -166,9 +166,11 @@ export function BacktestPanel({
               <tr>
                 <th>시각</th>
                 <th>상태</th>
+                <th>종목</th>
+                <th>방향</th>
                 <th>PnL</th>
                 <th>거래</th>
-                <th>추천 score</th>
+                <th>추천</th>
               </tr>
             </thead>
             <tbody>
@@ -176,6 +178,15 @@ export function BacktestPanel({
                 <tr key={h.id}>
                   <td className="ts-cell">{h.finished_at?.slice(0, 19).replace("T", " ")}</td>
                   <td>{h.status}</td>
+                  <td className="sym-cell" title={(h.symbols ?? []).join(", ")}>
+                    {(h.symbols ?? []).join(", ") || "—"}
+                  </td>
+                  <td>
+                    {h.direction === "inverse" ? "역방향" : h.direction === "normal" ? "정방향" : "—"}
+                    {h.window_ratio != null && h.window_ratio < 1
+                      ? ` ${Math.round(h.window_ratio * 100)}%`
+                      : ""}
+                  </td>
                   <td className={(h.metrics?.total_pnl ?? 0) >= 0 ? "positive" : "negative"}>
                     {h.metrics?.total_pnl != null
                       ? `${h.metrics.total_pnl >= 0 ? "+" : ""}${fmtNum(h.metrics.total_pnl)}`
@@ -217,9 +228,73 @@ export function BacktestPanel({
               <div className="value">{rec?.min_score ?? "—"}</div>
               <div className="sub">{rec?.reason ?? "탐색 안 함"}</div>
             </div>
+            <div className="card bt-direction-card">
+              <h3>추천 방향</h3>
+              <div className="value">
+                {rec?.direction === "inverse" ? "역방향 (신호 반전)" : "정방향"}
+              </div>
+              <div className="sub">
+                구간 {Math.round((rec?.window_ratio ?? 1) * 100)}%
+                {result.symbols?.length ? ` · ${result.symbols.join(", ")}` : ""}
+              </div>
+            </div>
           </div>
 
           <BacktestCandlesGrid result={result} />
+
+          {rec?.direction_trials && rec.direction_trials.length > 0 && (
+            <div className="section">
+              <h2>방향·구간 탐색 ({rec.direction_trials.length}조합)</h2>
+              <div className="bt-dir-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>방향</th>
+                      <th>구간</th>
+                      <th>score</th>
+                      <th>PnL</th>
+                      <th>승률</th>
+                      <th>거래</th>
+                      <th>롱/숏</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rec.direction_trials
+                      .filter((t) => t.trades > 0)
+                      .sort(
+                        (a, b) =>
+                          b.total_pnl + b.win_rate * 0.35 - (a.total_pnl + a.win_rate * 0.35),
+                      )
+                      .slice(0, 24)
+                      .map((t, i) => (
+                        <tr
+                          key={`${t.mode}-${t.window_ratio}-${t.min_score}-${i}`}
+                          className={
+                            t.mode === rec.direction &&
+                            t.window_ratio === rec.window_ratio &&
+                            t.min_score === rec.min_score
+                              ? "row-best"
+                              : ""
+                          }
+                        >
+                          <td>{t.mode === "inverse" ? "역방향" : "정방향"}</td>
+                          <td>{Math.round(t.window_ratio * 100)}%</td>
+                          <td>{t.min_score}</td>
+                          <td className={t.total_pnl >= 0 ? "positive" : "negative"}>
+                            {t.total_pnl >= 0 ? "+" : ""}{fmtNum(t.total_pnl)}
+                          </td>
+                          <td>{fmtNum(t.win_rate, 1)}%</td>
+                          <td>{t.trades}</td>
+                          <td>
+                            {t.long_trades ?? 0}/{t.short_trades ?? 0}
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           {rec?.trials && rec.trials.length > 0 && (
             <div className="section">
@@ -313,9 +388,10 @@ export function BacktestPanel({
           </div>
 
           <p className="bt-note">
-            적용 파라미터: min_score={String(result.params_snapshot?.min_score_applied ?? "—")}
-            · 현재 설정 {config.min_score}
-            · {result.symbols?.join(", ")}
+            적용: min_score={String(result.params_snapshot?.min_score_applied ?? "—")}
+            · 방향 {String(result.params_snapshot?.direction ?? "normal")}
+            · 구간 {Math.round(Number(result.params_snapshot?.window_ratio ?? 1) * 100)}%
+            · 종목 {result.symbols?.join(", ") || "—"}
           </p>
         </>
       )}

@@ -766,6 +766,21 @@ const CLOSE_TYPE_LABEL: Record<string, string> = {
   other: "기타",
 };
 
+function exitPriceDelta(t: TradeRecord): React.ReactNode {
+  const entry = t.entry_price ?? 0;
+  const exit = t.exit_price ?? t.price ?? 0;
+  if (entry <= 0 || exit <= 0) return "—";
+  const pct = ((exit - entry) / entry) * 100;
+  const cls = pct >= 0 ? "positive" : "negative";
+  const sign = pct >= 0 ? "+" : "";
+  return (
+    <span className={cls} title="진입가 대비 청산가 변동률">
+      {sign}
+      {fmtNum(pct, 2)}%
+    </span>
+  );
+}
+
 function ExitHistoryPanel({
   trades,
   filter,
@@ -843,8 +858,9 @@ function ExitHistoryPanel({
                 <th>방향</th>
                 <th>구분</th>
                 <th>전략</th>
-                <th>진입</th>
-                <th>청산</th>
+                <th>진입 시세</th>
+                <th>청산 시세</th>
+                <th>가격 변동</th>
                 <th>명목</th>
                 <th>PnL</th>
                 <th>사유</th>
@@ -866,8 +882,15 @@ function ExitHistoryPanel({
                     </span>
                   </td>
                   <td>{t.strategy_mode === "swing" ? "장타" : t.strategy_mode ? "단타" : "—"}</td>
-                  <td>${fmtPrice(t.entry_price ?? 0)}</td>
-                  <td>${fmtPrice(t.price)}</td>
+                  <td className="price-cell" title="진입 체결 시점 코인 USDT 가격">
+                    ${fmtPrice(t.entry_price ?? 0)}
+                  </td>
+                  <td className="price-cell" title="청산(손절·익절) 시점 코인 USDT 가격">
+                    ${fmtPrice(t.exit_price ?? t.price)}
+                  </td>
+                  <td className="price-delta-cell">
+                    {exitPriceDelta(t)}
+                  </td>
                   <td>${fmtNum(t.notional_usdt ?? 0, 0)}</td>
                   <td className={t.pnl >= 0 ? "positive" : "negative"}>
                     {t.pnl >= 0 ? "+" : ""}{fmtNum(t.pnl)} ({fmtNum(t.pnl_pct, 1)}%)

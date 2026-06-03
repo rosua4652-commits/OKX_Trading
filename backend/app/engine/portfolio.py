@@ -205,6 +205,7 @@ class PortfolioManager:
             close_type=classify_close_type(reason),
             position_side=pos.side.value,
             entry_price=pos.entry_price,
+            exit_price=exit_price,
             notional_usdt=round(notional, 2),
             strategy_mode=pos.strategy_mode.value if hasattr(pos.strategy_mode, "value") else str(pos.strategy_mode),
             mode=self.mode,

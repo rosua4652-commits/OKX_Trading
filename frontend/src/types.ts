@@ -92,6 +92,7 @@ export interface TradeRecord {
   close_type?: string;
   position_side?: string;
   entry_price?: number;
+  exit_price?: number;
   notional_usdt?: number;
   strategy_mode?: string;
   mode?: string;
@@ -107,10 +108,25 @@ export interface BacktestTrial {
   short_entries: number;
 }
 
+export interface BacktestDirectionTrial {
+  mode: string;
+  window_ratio: number;
+  min_score: number;
+  total_pnl: number;
+  win_rate: number;
+  trades: number;
+  long_trades?: number;
+  short_trades?: number;
+}
+
 export interface BacktestRecommendation {
   min_score: number;
   reason: string;
   trials: BacktestTrial[];
+  direction?: string;
+  direction_reason?: string;
+  direction_trials?: BacktestDirectionTrial[];
+  window_ratio?: number;
 }
 
 export interface BacktestMetrics {
@@ -186,7 +202,14 @@ export interface BacktestHistoryEntry {
   strategy_mode: string;
   symbols: string[];
   metrics?: BacktestMetrics;
-  recommendation?: { min_score: number; reason?: string };
+  recommendation?: {
+    min_score: number;
+    reason?: string;
+    direction?: string;
+    window_ratio?: number;
+  };
+  direction?: string;
+  window_ratio?: number;
   trade_count: number;
   error?: string;
 }
