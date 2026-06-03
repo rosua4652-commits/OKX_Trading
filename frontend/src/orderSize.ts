@@ -42,7 +42,7 @@ export function explainOrderSize(
   const mode = config.position_size_mode || "fixed";
   const pct = config.order_size_pct ?? 2;
   const cap = config.max_order_size_usdt ?? 0;
-  const minSz = config.min_order_size_usdt ?? 10;
+  const minSz = config.min_order_size_usdt ?? 0;
   const basis = config.order_size_basis || "notional";
   const lev = Math.max(1, config.leverage || 1);
   const open = portfolio.positions.length;

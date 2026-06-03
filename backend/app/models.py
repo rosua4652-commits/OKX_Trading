@@ -48,7 +48,7 @@ class AppConfig(BaseModel):
     position_size_mode: str = "fixed"
     order_size_pct: float = 2.0
     max_order_size_usdt: float = 0.0
-    min_order_size_usdt: float = 10.0
+    min_order_size_usdt: float = 0.0
     size_split_slots: bool = False
     order_size_basis: str = "notional"
     leverage: int = 3
@@ -83,6 +83,7 @@ class Position(BaseModel):
     tp_pct: float = 0.0
     sl_tp_note: str = ""
     sl_tp_manual: bool = False
+    auto_sl_tp_disabled: bool = False
     trailing_high: float = 0.0
     strategy_mode: StrategyMode = StrategyMode.SCALP
     instrument_type: InstrumentType = InstrumentType.SWAP

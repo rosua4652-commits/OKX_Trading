@@ -18,6 +18,7 @@ from app.models import (
     PortfolioSnapshot,
     Position,
     PositionSide,
+    PositionSideMode,
     StrategyMode,
 )
 from app.order_sizing import resolve_order_size_usdt
@@ -133,6 +134,15 @@ def _flip_side(side: PositionSide | None) -> PositionSide | None:
     if side == PositionSide.SHORT:
         return PositionSide.LONG
     return None
+
+
+def _config_for_direction(config: AppConfig, direction: str | None) -> AppConfig:
+    cfg = config.model_copy(deep=True)
+    if direction == "long_only":
+        cfg.position_side = PositionSideMode.LONG
+    elif direction == "short_only":
+        cfg.position_side = PositionSideMode.SHORT
+    return cfg
 
 
 def _record_close(
@@ -537,13 +547,20 @@ def optimize_strategy(
         )
     )
 
-    for mode in ("normal", "inverse"):
-        invert = mode == "inverse"
+    mode_settings = (
+        ("normal", False, config.position_side),
+        ("long_only", False, PositionSideMode.LONG),
+        ("short_only", False, PositionSideMode.SHORT),
+        ("inverse", True, config.position_side),
+    )
+    for mode, invert, side_mode in mode_settings:
         for wratio in WINDOW_RATIOS:
             for ms in SCORE_GRID:
                 trial_logs: list[BacktestLogEntry] = []
+                trial_cfg = config.model_copy(deep=True)
+                trial_cfg.position_side = side_mode
                 state, _ = run_simulation(
-                    config,
+                    trial_cfg,
                     symbol_candles,
                     trial_logs,
                     min_score_override=ms,
@@ -583,8 +600,9 @@ def optimize_strategy(
 
     for ms in SCORE_GRID:
         st_logs: list[BacktestLogEntry] = []
+        best_cfg = _config_for_direction(config, best.mode)
         st, _ = run_simulation(
-            config,
+            best_cfg,
             symbol_candles,
             st_logs,
             min_score_override=ms,
@@ -605,13 +623,13 @@ def optimize_strategy(
             )
         )
 
-    normal_best = max(
-        (t for t in direction_trials if t.mode == "normal" and t.trades > 0),
+    long_best = max(
+        (t for t in direction_trials if t.mode in ("normal", "long_only") and (t.long_trades or 0) > 0),
         key=lambda t: _trial_rank(t.total_pnl, t.win_rate, t.trades),
         default=None,
     )
-    inverse_best = max(
-        (t for t in direction_trials if t.mode == "inverse" and t.trades > 0),
+    short_best = max(
+        (t for t in direction_trials if t.mode in ("short_only", "inverse") and (t.short_trades or 0) > 0),
         key=lambda t: _trial_rank(t.total_pnl, t.win_rate, t.trades),
         default=None,
     )
@@ -621,17 +639,17 @@ def optimize_strategy(
         f"min_score={best.min_score} PnL {best.total_pnl:+.2f} 승률 {best.win_rate}%"
     )
     if (
-        normal_best
-        and inverse_best
-        and normal_best.win_rate < 45
-        and inverse_best.win_rate >= normal_best.win_rate + 8
+        long_best
+        and short_best
+        and long_best.win_rate < 45
+        and short_best.win_rate >= long_best.win_rate + 8
     ):
         dir_reason += (
             f" | 정방향 승률 {normal_best.win_rate}% 낮음 → 역방향 {inverse_best.win_rate}% 우세"
         )
 
     rec_sl, rec_tp, sl_tp_trials, sl_tp_reason = optimize_sl_tp(
-        config,
+        _config_for_direction(config, best.mode),
         symbol_candles,
         logs,
         best.min_score,
@@ -693,6 +711,8 @@ def build_result(
     min_run = recommendation.min_score if recommendation else config.min_score
 
     run_cfg = config.model_copy(deep=True)
+    if recommendation:
+        run_cfg = _config_for_direction(run_cfg, recommendation.direction)
     if recommendation and recommendation.stop_loss_pct > 0 and recommendation.take_profit_pct > 0:
         run_cfg.stop_loss_pct = recommendation.stop_loss_pct
         run_cfg.take_profit_pct = recommendation.take_profit_pct

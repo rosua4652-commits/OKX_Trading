@@ -13,3 +13,9 @@ def test_swap_notional_matches_order_size():
 def test_swap_margin_with_leverage():
     margin = swap_margin_usdt(3000, 3)
     assert margin == 1000
+
+
+def test_swap_contract_count_respects_okx_min_and_lot():
+    contracts = swap_contract_count(4.9, price=100, ct_val=0.1, min_sz=0.5, lot_sz=0.5)
+    assert contracts == 0.5
+    assert swap_contract_count(26, price=100, ct_val=0.1, min_sz=0.5, lot_sz=0.5) == 2.5

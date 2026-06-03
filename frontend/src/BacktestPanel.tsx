@@ -78,9 +78,10 @@ export function BacktestPanel({
       return;
     }
     setMsg(res.message || "적용됨");
-    if (res.min_score != null) onConfigApplied(res.min_score);
+    if (res.config) onPatchConfig(res.config);
+    else if (res.min_score != null) onConfigApplied(res.min_score);
     onRefresh();
-  }, [onConfigApplied, onRefresh]);
+  }, [onConfigApplied, onPatchConfig, onRefresh]);
 
   const rec = result?.recommendation;
   const m = result?.metrics;

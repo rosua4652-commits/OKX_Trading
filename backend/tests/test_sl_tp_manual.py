@@ -1,4 +1,5 @@
 from app.engine.portfolio import PortfolioManager
+from app.engine.exit_rules import should_exit
 from app.models import AppConfig, InstrumentType, PositionSide, StrategyMode, TradeMode
 from app.sl_tp_utils import sl_tp_prices_from_pct, validate_sl_tp
 
@@ -34,3 +35,26 @@ def test_manual_sl_tp_persisted():
 def test_validate_short():
     err = validate_sl_tp(1.0, PositionSide.SHORT, 2.0, 3.0)
     assert err is None
+
+
+def test_auto_sl_tp_disabled_skips_exit():
+    pm = PortfolioManager(TradeMode.PAPER, 10_000)
+    cfg = AppConfig(instrument_type=InstrumentType.SWAP, leverage=10)
+    pos = pm.open_position(
+        "BTC-USDT-SWAP",
+        PositionSide.LONG,
+        1,
+        100,
+        cfg,
+        strategy_mode=StrategyMode.SCALP,
+        stop_loss=98,
+        take_profit=103,
+        sl_pct=2,
+        tp_pct=3,
+        notional_usdt=1000,
+    )
+    assert pos
+    pos.current_price = 97
+    pos.auto_sl_tp_disabled = True
+    exit_flag, _ = should_exit(pos, cfg)
+    assert not exit_flag

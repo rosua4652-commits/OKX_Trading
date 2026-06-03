@@ -69,6 +69,18 @@ export async function resetPositionSlTpAuto(
   return res.json();
 }
 
+export async function setPositionAutoSlTpDisabled(
+  instId: string,
+  disabled: boolean,
+): Promise<{ ok: boolean; message?: string }> {
+  const res = await fetch(`${BASE}/api/position/sl-tp/disabled`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ inst_id: instId, disabled }),
+  });
+  return res.json();
+}
+
 export async function runBacktest(body: {
   symbols?: string[];
   candle_limit?: number;
@@ -94,6 +106,7 @@ export async function applyBacktest(): Promise<{
   ok: boolean;
   message?: string;
   min_score?: number;
+  config?: AppConfig;
 }> {
   const res = await fetch(`${BASE}/api/backtest/apply`, { method: "POST" });
   return res.json();

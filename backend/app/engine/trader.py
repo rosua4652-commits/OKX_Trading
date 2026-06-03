@@ -7,12 +7,12 @@ import logging
 from typing import Callable, Optional
 
 from app.config import settings
-from app.contract_sizing import swap_contract_count, swap_notional_usdt, swap_margin_usdt
+from app.contract_sizing import swap_contract_count, swap_notional_usdt
 from app.engine.activity_log import push_activity
 from app.config_changelog import format_config_changes
 from app.config_public import config_for_client
 from app.engine.exit_rules import apply_strategy_defaults, should_exit
-from app.order_sizing import resolve_order_size_usdt
+from app.order_sizing import entry_cost_usdt, resolve_order_size_usdt
 from app.strategy_utils import active_strategies
 from app.engine.portfolio import PortfolioManager
 from app.engine.portfolio_store import store
@@ -23,6 +23,7 @@ from app.market.entry_analyzer import analyze_batch
 from app.market.dynamic_sl_tp import compute_dynamic_sl_tp
 from app.market.live_account import sync_live_portfolio
 from app.market.live_exchange import live_close, live_open
+from app.market.instrument_rules import swap_sizing_rules
 from app.market.scanner import scan_market, top_symbols
 from app.models import (
     AppConfig,
@@ -85,7 +86,7 @@ class TradingEngine:
 
     async def _refresh_dynamic_sl_tp_all(self) -> None:
         for inst_id, pos in list(self.portfolio.positions.items()):
-            if pos.sl_tp_manual or pos.entry_price <= 0:
+            if pos.auto_sl_tp_disabled or pos.sl_tp_manual or pos.entry_price <= 0:
                 continue
             strat = pos.strategy_mode
             if strat == StrategyMode.BOTH:
@@ -340,10 +341,11 @@ class TradingEngine:
                 snap,
                 open_positions=len(snap.positions),
             )
-            if self.portfolio.available < size_usdt:
+            need_cost = entry_cost_usdt(self.config, size_usdt)
+            if self.portfolio.available < need_cost:
                 self._log(
                     "entry",
-                    f"진입 실패 (가용 ${self.portfolio.available:.2f} < 주문 ${size_usdt:.2f}): {inst_id}",
+                    f"live entry blocked (available ${self.portfolio.available:.2f} < margin+fee ${need_cost:.2f}): {inst_id}",
                     "warn",
                 )
                 return False
@@ -361,8 +363,15 @@ class TradingEngine:
             quantity = size_usdt / price
             notional = size_usdt
         else:
-            quantity = swap_contract_count(size_usdt, price)
-            notional = swap_notional_usdt(quantity, price)
+            rules = swap_sizing_rules(self.config, inst_id)
+            quantity = swap_contract_count(
+                size_usdt,
+                price,
+                rules.ct_val,
+                rules.min_sz,
+                rules.lot_sz,
+            )
+            notional = swap_notional_usdt(quantity, price, rules.ct_val)
 
         strat = strategy_mode or self.config.strategy_mode
         if strat == StrategyMode.BOTH:
@@ -394,11 +403,10 @@ class TradingEngine:
                 "ok",
             )
             return True
-        lev = max(1, self.config.leverage)
-        margin = swap_margin_usdt(notional, lev) if self.config.instrument_type != InstrumentType.SPOT else notional
+        need_cost = entry_cost_usdt(self.config, notional)
         self._log(
             "entry",
-            f"진입 실패 (가용 ${self.portfolio.available:,.0f} < 마진 ${margin:,.0f}): {inst_id}",
+            f"entry blocked (available ${self.portfolio.available:,.2f} < margin+fee ${need_cost:,.2f}): {inst_id}",
             "warn",
         )
         return False
@@ -472,6 +480,22 @@ class TradingEngine:
             self._notify()
         return ok, msg
 
+    async def set_position_auto_sl_tp_disabled(
+        self,
+        inst_id: str,
+        disabled: bool,
+    ) -> tuple[bool, str]:
+        self.bind_portfolio()
+        pos = self.portfolio.positions.get(inst_id)
+        if not pos:
+            return False, "포지션 없음"
+        pos.auto_sl_tp_disabled = bool(disabled)
+        self.portfolio.save()
+        label = "사용 안 함" if disabled else "사용"
+        self._log("config", f"[포지션 SL/TP 자동] {inst_id} {label}", "ok")
+        self._notify()
+        return True, "OK"
+
     async def reset_position_sl_tp_auto(self, inst_id: str) -> tuple[bool, str]:
         self.bind_portfolio()
         if not self.portfolio.clear_sl_tp_manual(inst_id):
@@ -479,6 +503,7 @@ class TradingEngine:
         pos = self.portfolio.positions.get(inst_id)
         if not pos or pos.entry_price <= 0:
             return False, "포지션 없음"
+        pos.auto_sl_tp_disabled = False
         strat = pos.strategy_mode
         if strat == StrategyMode.BOTH:
             strat = StrategyMode.SCALP

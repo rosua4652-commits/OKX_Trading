@@ -66,6 +66,25 @@ def get_latest() -> Optional[BacktestResult]:
     return None
 
 
+def load_persisted_state() -> None:
+    """Restore the latest result pointer after a server restart."""
+    global _latest, _status
+    latest = get_latest()
+    if not latest:
+        return
+    _latest = latest
+    _status.result_id = latest.id
+    _status.phase = latest.status if latest.status in ("done", "error") else "idle"
+    if latest.status == "done" and latest.metrics:
+        _status.progress_pct = 100.0
+        _status.message = (
+            f"최근 백테스트 복구 — PnL {latest.metrics.total_pnl:+.2f} "
+            f"승률 {latest.metrics.win_rate}%"
+        )
+    elif latest.error:
+        _status.message = latest.error
+
+
 def get_history(limit: int = 30) -> list[dict[str, Any]]:
     if not HISTORY_FILE.exists():
         return []

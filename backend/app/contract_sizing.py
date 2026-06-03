@@ -7,14 +7,24 @@ import math
 DEFAULT_CT_VAL = 0.01
 
 
+def floor_to_step(value: float, step: float) -> float:
+    if step <= 0:
+        return value
+    return math.floor(value / step) * step
+
+
 def swap_contract_count(
     size_usdt: float,
     price: float,
     ct_val: float = DEFAULT_CT_VAL,
+    min_sz: float = 1.0,
+    lot_sz: float = 1.0,
 ) -> float:
     if price <= 0 or ct_val <= 0:
-        return 1.0
-    return float(max(1, math.floor(size_usdt / (price * ct_val))))
+        return max(min_sz, 1.0)
+    raw = size_usdt / (price * ct_val)
+    contracts = floor_to_step(raw, lot_sz)
+    return float(max(min_sz, contracts))
 
 
 def swap_notional_usdt(

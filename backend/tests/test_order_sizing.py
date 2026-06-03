@@ -1,5 +1,5 @@
 from app.models import AppConfig, PortfolioSnapshot
-from app.order_sizing import resolve_order_size_detail, resolve_order_size_usdt
+from app.order_sizing import entry_cost_usdt, resolve_order_size_detail, resolve_order_size_usdt
 
 
 def _snap(equity: float, available: float, n_pos: int = 0) -> PortfolioSnapshot:
@@ -53,3 +53,14 @@ def test_margin_basis():
 def test_margin_mode_default_isolated():
     cfg = AppConfig()
     assert cfg.margin_mode == "isolated"
+
+
+def test_sub_10_fixed_size_is_not_forced_to_10():
+    cfg = AppConfig(order_size_usdt=5, position_size_mode="fixed")
+    assert resolve_order_size_usdt(cfg, _snap(100, 100)) == 5
+
+
+def test_live_swap_entry_cost_uses_margin_plus_fee():
+    cfg = AppConfig(order_size_usdt=9, position_size_mode="fixed", leverage=3)
+    cost = entry_cost_usdt(cfg, resolve_order_size_usdt(cfg, _snap(100, 100)))
+    assert 3 < cost < 4

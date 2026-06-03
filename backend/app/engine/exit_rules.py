@@ -11,6 +11,9 @@ def should_exit(
     pos: Position,
     config: AppConfig,
 ) -> tuple[bool, str]:
+    if pos.auto_sl_tp_disabled:
+        return False, ""
+
     price = pos.current_price
     if price <= 0:
         return False, ""

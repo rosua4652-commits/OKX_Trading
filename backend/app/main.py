@@ -35,6 +35,7 @@ from app.backtest.runner import (
     get_latest,
     get_status as backtest_status,
     interval_seconds,
+    load_persisted_state,
     set_auto_apply_handler,
     start_backtest,
     start_background_loop,
@@ -89,6 +90,7 @@ async def _broadcast_loop() -> None:
 async def lifespan(app: FastAPI):
     global _broadcast_task
     engine.bind_portfolio()
+    load_persisted_state()
     _broadcast_task = asyncio.create_task(_broadcast_loop())
 
     def _on_backtest_complete(result: BacktestResult) -> None:
@@ -237,9 +239,20 @@ class PositionSlTpRequest(BaseModel):
     tp_pct: float
 
 
+class PositionAutoSlTpRequest(BaseModel):
+    inst_id: str
+    disabled: bool
+
+
 @api.post("/position/sl-tp")
 async def set_position_sl_tp(req: PositionSlTpRequest):
     ok, msg = await engine.set_position_sl_tp(req.inst_id, req.sl_pct, req.tp_pct)
+    return {"ok": ok, "message": msg}
+
+
+@api.post("/position/sl-tp/disabled")
+async def set_position_auto_sl_tp_disabled(req: PositionAutoSlTpRequest):
+    ok, msg = await engine.set_position_auto_sl_tp_disabled(req.inst_id, req.disabled)
     return {"ok": ok, "message": msg}
 
 

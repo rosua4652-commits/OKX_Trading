@@ -11,6 +11,7 @@ export interface Position {
   tp_pct?: number;
   sl_tp_note?: string;
   sl_tp_manual?: boolean;
+  auto_sl_tp_disabled?: boolean;
   unrealized_pnl: number;
   unrealized_pnl_pct: number;
   entry_reason: string;

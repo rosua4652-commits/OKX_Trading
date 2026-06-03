@@ -10,6 +10,11 @@ from app.config import settings
 logger = logging.getLogger("oat.okx")
 
 
+def _is_pos_side_error(result: Any) -> bool:
+    text = str(result).lower()
+    return "posside" in text or "pos side" in text or "parameter posside error" in text
+
+
 class OKXClient:
     """Unified OKX API access for market data and trading."""
 
@@ -28,6 +33,7 @@ class OKXClient:
         self._trade = None
         self._account = None
         self._public = None
+        self.last_error = ""
 
     def _ensure_imports(self) -> None:
         if self._market is not None:
@@ -118,6 +124,12 @@ class OKXClient:
             logger.error("get_instruments error: %s", e)
         return []
 
+    def get_instrument(self, inst_id: str, inst_type: str = "SWAP") -> Optional[dict[str, Any]]:
+        for inst in self.get_instruments(inst_type=inst_type):
+            if inst.get("instId") == inst_id:
+                return inst
+        return None
+
     def get_balance(self) -> list[dict[str, Any]]:
         self._ensure_imports()
         if not self._account:
@@ -161,7 +173,14 @@ class OKXClient:
             if mgn_mode == "isolated" and pos_side:
                 params["posSide"] = pos_side
             result = self._account.set_leverage(**params)
-            return self._ok(result)
+            if self._ok(result):
+                return True
+            if pos_side and _is_pos_side_error(result):
+                params.pop("posSide", None)
+                result = self._account.set_leverage(**params)
+                return self._ok(result)
+            logger.error("set_leverage failed: %s", result)
+            return False
         except Exception as e:
             logger.error("set_leverage error: %s", e)
             return False
@@ -178,8 +197,10 @@ class OKXClient:
     ) -> Optional[dict[str, Any]]:
         self._ensure_imports()
         if not self._trade:
+            self.last_error = "trade api unavailable"
             return None
         try:
+            self.last_error = ""
             params: dict[str, Any] = {
                 "instId": inst_id,
                 "tdMode": td_mode,
@@ -187,15 +208,25 @@ class OKXClient:
                 "ordType": ord_type,
                 "sz": sz,
             }
-            if "-SWAP" in inst_id or "-FUTURES" in inst_id.upper():
+            if params.get("tdMode") == "cash" and side == "buy":
+                params["tgtCcy"] = "quote_ccy"
+            if pos_side and ("-SWAP" in inst_id or "-FUTURES" in inst_id.upper()):
                 params["posSide"] = pos_side
             if ord_type == "limit" and px:
                 params["px"] = px
             result = self._trade.place_order(**params)
             if self._ok(result) and result.get("data"):
                 return result["data"][0]
+            if params.get("posSide") and _is_pos_side_error(result):
+                retry = dict(params)
+                retry.pop("posSide", None)
+                result = self._trade.place_order(**retry)
+                if self._ok(result) and result.get("data"):
+                    return result["data"][0]
+            self.last_error = str(result)
             logger.error("place_order failed: %s", result)
         except Exception as e:
+            self.last_error = str(e)
             logger.error("place_order error: %s", e)
         return None
 

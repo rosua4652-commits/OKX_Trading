@@ -101,6 +101,13 @@ def _okx_to_position(raw: dict, config: AppConfig, existing: Optional[Position])
             existing.opened_at,
         )
         pos_id = existing.id
+        auto_disabled = existing.auto_sl_tp_disabled
+        manual = existing.sl_tp_manual
+        manual_sl = existing.stop_loss
+        manual_tp = existing.take_profit
+        manual_sl_pct = existing.sl_pct
+        manual_tp_pct = existing.tp_pct
+        manual_note = existing.sl_tp_note
     else:
         reason, score = "OKX 포지션", 0.0
         strategy = (
@@ -110,9 +117,18 @@ def _okx_to_position(raw: dict, config: AppConfig, existing: Optional[Position])
         )
         opened = utc_now_iso()
         pos_id = str(uuid.uuid4())[:8]
+        auto_disabled = False
+        manual = False
+        manual_sl = manual_tp = manual_sl_pct = manual_tp_pct = 0.0
+        manual_note = "OKX동기화·차트갱신예정"
 
     sl, tp = _sl_tp(entry, side, config, strategy)
     sl_p, tp_p = sl_tp_pcts(config, _resolve_strategy(strategy))
+    if manual or auto_disabled:
+        sl = manual_sl or sl
+        tp = manual_tp or tp
+        sl_p = manual_sl_pct or sl_p
+        tp_p = manual_tp_pct or tp_p
 
     cost = entry * size if entry > 0 else 0
     if upl_ratio == 0 and cost > 0:
@@ -129,7 +145,9 @@ def _okx_to_position(raw: dict, config: AppConfig, existing: Optional[Position])
         take_profit=tp,
         sl_pct=sl_p,
         tp_pct=tp_p,
-        sl_tp_note="OKX동기화·차트갱신예정",
+        sl_tp_note=manual_note,
+        sl_tp_manual=manual,
+        auto_sl_tp_disabled=auto_disabled,
         trailing_high=mark,
         strategy_mode=strategy,
         instrument_type=config.instrument_type,

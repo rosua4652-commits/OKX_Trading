@@ -119,12 +119,13 @@ function App() {
       const res = await updateConfig(payload);
       setApiDraft({ key: "", secret: "", pass: "" });
       configLockedRef.current = false;
-      await refresh();
       setConfigSaveStatus(res?.ok === false ? "error" : "saved");
       if (res?.ok !== false) {
         window.setTimeout(() => setConfigSaveStatus("idle"), 4000);
       }
+      refresh().catch(() => undefined);
     } catch {
+      configLockedRef.current = false;
       setConfigSaveStatus("error");
     }
   };

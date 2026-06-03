@@ -1,6 +1,6 @@
 import numpy as np
 
-from app.backtest.engine import run_simulation
+from app.backtest.engine import optimize_strategy, run_simulation
 from app.backtest.models import BacktestLogEntry
 from app.models import AppConfig, StrategyMode
 
@@ -42,3 +42,15 @@ def test_invert_signals_runs():
         config, candles, logs, min_score_override=45, invert_signals=True, window_ratio=0.75
     )
     assert not state.positions
+
+
+def test_optimizer_includes_long_short_and_inverse_modes():
+    config = AppConfig(strategy_mode=StrategyMode.SCALP, min_score=45, max_positions=2)
+    logs: list[BacktestLogEntry] = []
+    candles = {
+        "UP-USDT-SWAP": _fake_candles(150, 0.08),
+        "DOWN-USDT-SWAP": _fake_candles(150, -0.08),
+    }
+    rec = optimize_strategy(config, candles, logs)
+    modes = {t.mode for t in rec.direction_trials}
+    assert {"normal", "long_only", "short_only", "inverse"}.issubset(modes)

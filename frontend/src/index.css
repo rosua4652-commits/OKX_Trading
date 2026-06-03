@@ -225,6 +225,13 @@ button.bt-candle-click:hover {
   font-size: 0.65rem;
   padding: 1px 6px;
 }
+.badge.disabled-sl-tp {
+  background: rgba(248, 81, 73, 0.14);
+  color: #ff938a;
+  border: 1px solid #f85149;
+  font-size: 0.65rem;
+  padding: 1px 6px;
+}
 .sl-tp-inputs {
   display: flex;
   flex-wrap: wrap;
@@ -254,6 +261,20 @@ button.bt-candle-click:hover {
 }
 .sl-tp-inputs button.sl-tp-save { border-color: #238636; color: #3fb950; }
 .sl-tp-inputs button.sl-tp-auto { border-color: #58a6ff; color: #58a6ff; }
+.sl-tp-disable-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  color: #c9d1d9;
+  font-size: 0.68rem;
+  cursor: pointer;
+}
+.sl-tp-disable-toggle input {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+}
 .sl-tp-hint { font-size: 0.65rem; color: #6e7681; margin-top: 4px; }
 .sl-tp-err { color: #f85149; font-size: 0.65rem; margin-top: 2px; }
 

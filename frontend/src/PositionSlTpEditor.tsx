@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
-import { resetPositionSlTpAuto, setPositionSlTp } from "./api";
-import { fmtNum, fmtPrice, fmtSlTpCell, slTpFromPrices } from "./format";
+import {
+  resetPositionSlTpAuto,
+  setPositionAutoSlTpDisabled,
+  setPositionSlTp,
+} from "./api";
+import { fmtPrice, fmtSlTpCell, slTpFromPrices } from "./format";
 import type { Position } from "./types";
 
 export function PositionSlTpEditor({
@@ -67,12 +71,29 @@ export function PositionSlTpEditor({
     try {
       const res = await resetPositionSlTpAuto(p.inst_id);
       if (!res.ok) {
-        setErr(res.message || "복귀 실패");
+        setErr(res.message || "자동 복구 실패");
         return;
       }
       onSaved();
     } catch {
-      setErr("복귀 실패");
+      setErr("자동 복구 실패");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleDisabled = async (disabled: boolean) => {
+    setSaving(true);
+    setErr("");
+    try {
+      const res = await setPositionAutoSlTpDisabled(p.inst_id, disabled);
+      if (!res.ok) {
+        setErr(res.message || "설정 실패");
+        return;
+      }
+      onSaved();
+    } catch {
+      setErr("설정 실패");
     } finally {
       setSaving(false);
     }
@@ -82,6 +103,7 @@ export function PositionSlTpEditor({
     <div className="sl-tp-editor" onClick={(e) => e.stopPropagation()}>
       <div className="sl-tp-summary">
         {p.sl_tp_manual && <span className="badge manual-sl-tp">수동</span>}
+        {p.auto_sl_tp_disabled && <span className="badge disabled-sl-tp">자동 OFF</span>}
         <span className="sl-tp-pct-line">{t.text}</span>
       </div>
       <div className="sl-tp-prices muted">
@@ -111,15 +133,26 @@ export function PositionSlTpEditor({
           />
         </label>
         <button type="button" className="sl-tp-save" disabled={saving} onClick={save}>
-          {saving ? "…" : "적용"}
+          {saving ? "저장중" : "적용"}
         </button>
-        {p.sl_tp_manual && (
+        {(p.sl_tp_manual || p.auto_sl_tp_disabled) && (
           <button type="button" className="sl-tp-auto" disabled={saving} onClick={resetAuto}>
-            AI자동
+            자동
           </button>
         )}
       </div>
-      <div className="sl-tp-hint">가격 도달 시 봇이 자동 손절·익절</div>
+      <label className="sl-tp-disable-toggle">
+        <input
+          type="checkbox"
+          checked={!!p.auto_sl_tp_disabled}
+          disabled={saving}
+          onChange={(e) => toggleDisabled(e.target.checked)}
+        />
+        자동 손/익절 사용 안 함
+      </label>
+      <div className="sl-tp-hint">
+        체크 시 봇이 이 포지션의 자동 SL/TP 갱신과 자동 손절·익절 청산을 건드리지 않습니다.
+      </div>
       {err && <div className="sl-tp-err">{err}</div>}
     </div>
   );

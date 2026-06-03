@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.contract_sizing import swap_margin_usdt
-from app.models import AppConfig, PortfolioSnapshot
+from app.config import settings
+from app.models import AppConfig, InstrumentType, PortfolioSnapshot
 
 
 @dataclass
@@ -53,7 +54,7 @@ def resolve_order_size_detail(
     mode = getattr(config, "position_size_mode", "fixed") or "fixed"
     pct = getattr(config, "order_size_pct", 2.0) or 2.0
     cap = getattr(config, "max_order_size_usdt", 0.0) or 0.0
-    min_sz = getattr(config, "min_order_size_usdt", 10.0) or 10.0
+    min_sz = max(0.0, float(getattr(config, "min_order_size_usdt", 0.0) or 0.0))
     basis = getattr(config, "order_size_basis", "notional") or "notional"
     lev = max(1, int(config.leverage or 1))
     open_n = open_positions if open_positions is not None else len(portfolio.positions)
@@ -129,3 +130,14 @@ def resolve_order_size_usdt(
     open_positions: int | None = None,
 ) -> float:
     return resolve_order_size_detail(config, portfolio, open_positions).notional_usdt
+
+
+def entry_margin_usdt(config: AppConfig, notional_usdt: float) -> float:
+    if config.instrument_type == InstrumentType.SPOT:
+        return notional_usdt
+    return swap_margin_usdt(notional_usdt, max(1, int(config.leverage or 1)))
+
+
+def entry_cost_usdt(config: AppConfig, notional_usdt: float) -> float:
+    fee = notional_usdt * settings.trading_fee_pct / 100
+    return entry_margin_usdt(config, notional_usdt) + fee
