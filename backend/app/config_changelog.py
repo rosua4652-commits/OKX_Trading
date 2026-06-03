@@ -29,6 +29,7 @@ _LABELS: dict[str, str] = {
     "position_side": "진입 방향",
     "min_score": "최소 점수",
     "backtest_auto_settings": "백테스트 자동설정",
+    "backtest_interval_minutes": "백테스트 주기(분)",
     "paper_initial_balance": "모의 초기자금",
     "okx_flag": "OKX API 환경",
     "scan_symbols": "스캔 종목",

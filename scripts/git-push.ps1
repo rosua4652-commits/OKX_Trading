@@ -28,6 +28,20 @@ function Invoke-Git {
     }
 }
 
+function Invoke-GitSoft {
+    param([Parameter(Mandatory = $true)][string[]]$Args)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $out = & git @Args 2>&1
+    foreach ($line in $out) {
+        $text = if ($line -is [System.Management.Automation.ErrorRecord]) { $line.ToString() } else { "$line" }
+        if (-not [string]::IsNullOrWhiteSpace($text)) { Write-Host $text }
+    }
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = $prev
+    return $code
+}
+
 function Test-GitRef {
     param([string]$Ref)
     $prev = $ErrorActionPreference
@@ -36,6 +50,28 @@ function Test-GitRef {
     $ok = ($LASTEXITCODE -eq 0)
     $ErrorActionPreference = $prev
     return $ok
+}
+
+function Test-GitAncestor {
+    param([string]$Ancestor, [string]$Descendant)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & git merge-base --is-ancestor $Ancestor $Descendant 2>&1 | Out-Null
+    $ok = ($LASTEXITCODE -eq 0)
+    $ErrorActionPreference = $prev
+    return $ok
+}
+
+function Stop-InterruptedRebase {
+    $rebaseDir = Join-Path $Root ".git\rebase-merge"
+    $rebaseApply = Join-Path $Root ".git\rebase-apply"
+    if (-not ((Test-Path $rebaseDir) -or (Test-Path $rebaseApply))) { return }
+
+    Write-Host "Interrupted rebase detected - aborting to keep your local files." -ForegroundColor Yellow
+    Invoke-GitSoft -Args @("rebase", "--abort") | Out-Null
+    if (Test-GitRef -Ref "refs/heads/$script:Branch") {
+        Invoke-Git -Args @("checkout", $script:Branch)
+    }
 }
 
 function Get-GitConfigValue {
@@ -69,12 +105,33 @@ function Ensure-GitIdentity {
     Write-Host ""
 }
 
+function Push-ToOrigin {
+    param([string]$BranchName)
+
+    Write-Host ""
+    Write-Host "Pushing to GitHub (no pull --rebase; local files stay as-is) ..."
+    $code = Invoke-GitSoft -Args @("push", "-u", "origin", $BranchName)
+    if ($code -eq 0) { return }
+
+    Write-Host ""
+    Write-Host "Normal push was rejected (remote history differs from local)." -ForegroundColor Yellow
+    Write-Host "GitHub still has an older snapshot; your PC has the full project."
+    Write-Host "To update GitHub WITHOUT rolling back this folder, use force-with-lease."
+    Write-Host ""
+    $ans = Read-Host "Force push with lease? y/N"
+    if ($ans -notmatch "^[yY]$") {
+        throw "Push cancelled. Run restore-local.bat if files look old after a failed rebase."
+    }
+    Invoke-Git -Args @("push", "--force-with-lease", "-u", "origin", $BranchName)
+}
+
 $RemoteUrl = "https://github.com/rosua4652-commits/OKX_Trading.git"
 $Branch = "cursor/okx-auto-trader-2696"
 
 Write-Host "=== OKX Auto Trader - Git Push ===" -ForegroundColor Cyan
 Write-Host "Remote: $RemoteUrl"
 Write-Host "Branch: $Branch"
+Write-Host "Note: pull --rebase is NOT used (it caused old-version rollback)."
 Write-Host ""
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
@@ -84,11 +141,13 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 }
 
 if (Test-Path ".env") {
-    Write-Host "Note: .env is gitignored."
+    Write-Host ".env is gitignored."
     Write-Host ""
 }
 
 try {
+    Stop-InterruptedRebase
+
     if (-not (Test-Path ".git")) {
         Write-Host "Initializing git repository ..."
         Invoke-Git -Args @("init")
@@ -114,15 +173,10 @@ try {
     if (Test-GitRef -Ref "refs/heads/$Branch") {
         Invoke-Git -Args @("checkout", $Branch)
     } elseif (Test-GitRef -Ref "refs/remotes/origin/$Branch") {
-        Invoke-Git -Args @("checkout", "-b", $Branch, "origin/$Branch")
+        Write-Host "Local branch missing - creating from your latest local commits, not old remote only."
+        Invoke-Git -Args @("checkout", "-b", $Branch)
     } else {
-        $prev = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        git checkout -b $Branch 2>&1 | ForEach-Object { Write-Host $_ }
-        if ($LASTEXITCODE -ne 0) {
-            Invoke-Git -Args @("checkout", $Branch)
-        }
-        $ErrorActionPreference = $prev
+        Invoke-Git -Args @("checkout", "-b", $Branch)
     }
 
     Ensure-GitIdentity
@@ -153,53 +207,37 @@ try {
     }
 
     Write-Host ""
-    Write-Host "Fetching remote ..."
+    Write-Host "Fetching remote (compare only) ..."
     Invoke-Git -Args @("fetch", "origin", $Branch)
 
-    $prev = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    git rev-parse --verify "origin/$Branch" 2>&1 | Out-Null
-    $hasRemote = ($LASTEXITCODE -eq 0)
-    $ErrorActionPreference = $prev
+    $localHead = (git rev-parse HEAD).Trim()
+    $hasRemote = Test-GitRef -Ref "refs/remotes/origin/$Branch"
 
     if ($hasRemote) {
-        $stashNeeded = $false
-        $prev = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        git diff --quiet 2>&1 | Out-Null
-        $dirty = ($LASTEXITCODE -ne 0)
-        git diff --cached --quiet 2>&1 | Out-Null
-        $staged = ($LASTEXITCODE -ne 0)
-        $ErrorActionPreference = $prev
-        if ($dirty -or $staged) {
-            Write-Host "Stashing local changes before rebase ..."
-            Invoke-Git -Args @("stash", "push", "-m", "oat-push-$(Get-Date -Format 'yyyyMMdd-HHmmss')")
-            $stashNeeded = $true
-        }
+        $remoteHead = (git rev-parse "origin/$Branch").Trim()
+        Write-Host "Local:  $localHead"
+        Write-Host "Remote: $remoteHead"
 
-        Write-Host "Rebasing onto origin/$Branch ..."
-        $prev = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        git pull --rebase origin $Branch 2>&1 | ForEach-Object { Write-Host $_ }
-        if ($LASTEXITCODE -ne 0) {
-            $ErrorActionPreference = $prev
-            if ($stashNeeded) { git stash pop 2>&1 | Out-Null }
-            throw "git pull --rebase failed — run git-pull-sync.bat or fix conflicts, then push again"
-        }
-        $ErrorActionPreference = $prev
-
-        if ($stashNeeded) {
-            Write-Host "Restoring stashed changes ..."
-            $prev = $ErrorActionPreference
-            $ErrorActionPreference = "Continue"
-            git stash pop 2>&1 | ForEach-Object { Write-Host $_ }
-            $ErrorActionPreference = $prev
+        if (Test-GitAncestor -Ancestor $remoteHead -Descendant $localHead) {
+            $ahead = (git rev-list --count "$remoteHead..$localHead").Trim()
+            Write-Host "Local is $ahead commit(s) ahead of GitHub - push only." -ForegroundColor Green
+        } elseif (Test-GitAncestor -Ancestor $localHead -Descendant $remoteHead) {
+            Write-Host ""
+            Write-Host "[WARN] GitHub is ahead of your PC. pull --rebase is disabled here." -ForegroundColor Yellow
+            Write-Host "Use restore-local.bat to keep this folder. Do not use git-pull-sync.bat."
+            $merge = Read-Host "Try merge origin/$Branch into local? y/N"
+            if ($merge -match "^[yY]$") {
+                Invoke-Git -Args @("merge", "origin/$Branch", "-m", "merge origin/$Branch")
+            } else {
+                throw "Push aborted - update local copy manually if you really need remote changes."
+            }
+        } else {
+            Write-Host ""
+            Write-Host "Histories differ (common after first local init). Will push; force-with-lease may be needed." -ForegroundColor Yellow
         }
     }
 
-    Write-Host ""
-    Write-Host "Pushing to GitHub ..."
-    Invoke-Git -Args @("push", "-u", "origin", $Branch)
+    Push-ToOrigin -BranchName $Branch
 
     Write-Host ""
     Write-Host "Done: https://github.com/rosua4652-commits/OKX_Trading/tree/$Branch" -ForegroundColor Green
@@ -207,10 +245,9 @@ try {
 catch {
     Write-Host ""
     Write-Host "[ERROR] $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "If the project folder looks old: run restore-local.bat" -ForegroundColor Yellow
     if ("$($_.Exception.Message)" -match "push") {
         Write-Host "Check GitHub login and write access to the repository."
-    } elseif ("$($_.Exception.Message)" -match "commit") {
-        Write-Host "Set author: git config user.name / user.email (or run this script again)."
     }
     Read-Host "Press Enter to exit"
     exit 1

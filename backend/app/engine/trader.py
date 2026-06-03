@@ -142,7 +142,12 @@ class TradingEngine:
             "trades": [t.model_dump() for t in self.portfolio.trades[-200:]],
         }
         try:
-            from app.backtest.runner import get_history, get_latest, get_status as bt_status
+            from app.backtest.runner import (
+                get_history,
+                get_latest,
+                get_status as bt_status,
+                interval_seconds,
+            )
             from app.config import settings as app_settings
 
             bt = bt_status()
@@ -152,7 +157,8 @@ class TradingEngine:
                 "result": latest.model_dump() if latest else None,
                 "history": get_history(20),
                 "auto_run": app_settings.backtest_auto_run,
-                "interval_sec": app_settings.backtest_interval_sec,
+                "interval_sec": interval_seconds(self.config),
+                "interval_minutes": self.config.backtest_interval_minutes,
             }
         except Exception:
             pass

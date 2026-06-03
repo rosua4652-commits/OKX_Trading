@@ -34,6 +34,7 @@ from app.backtest.runner import (
     get_history,
     get_latest,
     get_status as backtest_status,
+    interval_seconds,
     set_auto_apply_handler,
     start_backtest,
     start_background_loop,
@@ -146,7 +147,8 @@ async def status():
         "result": latest.model_dump() if latest else None,
         "history": get_history(20),
         "auto_run": app_settings.backtest_auto_run,
-        "interval_sec": app_settings.backtest_interval_sec,
+        "interval_sec": interval_seconds(engine.config),
+        "interval_minutes": engine.config.backtest_interval_minutes,
     }
     return data
 

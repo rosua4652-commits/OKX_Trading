@@ -44,8 +44,9 @@ OKX API 키 발급: https://www.okx.com/account/my-api
 | `restart-server.bat` | 기존 서버 종료 후 로그 모드로 재시작 |
 | `stop-server.bat` | `.env`의 `OAT_PORT` 리스닝 프로세스 종료 |
 | `update-zip.bat` | GitHub ZIP으로 코드 동기화 (data·.env 유지) + npm build |
-| `git-pull-sync.bat` | `git pull --rebase` (원격 반영) |
-| `git-push.bat` | fetch + rebase 후 push |
+| `git-push.bat` | 로컬 커밋 후 GitHub push (**rebase 없음**, 폴더 구버전화 방지) |
+| `git-pull-sync.bat` | 원격/로컬 비교만 ( **pull --rebase 사용 안 함** ) |
+| `restore-local.bat` | rebase 실패 후 로컬 최신 커밋으로 복구 |
 
 ```bash
 chmod +x run.sh

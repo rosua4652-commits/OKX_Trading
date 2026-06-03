@@ -26,6 +26,7 @@ from app.backtest.models import (
     BacktestLogEntry,
     BacktestMetrics,
     BacktestRecommendation,
+    BacktestResult,
     BacktestScoreTrial,
     BacktestTrade,
 )

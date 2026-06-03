@@ -555,6 +555,7 @@ function App() {
           bundle={data.backtest ?? null}
           onRefresh={refresh}
           onConfigApplied={(minScore) => patchConfig({ min_score: minScore })}
+          onPatchConfig={patchConfig}
         />
       ) : mainTab === "exits" ? (
         <ExitHistoryPanel

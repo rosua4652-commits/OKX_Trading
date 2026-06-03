@@ -100,6 +100,12 @@ def _save_result(result: BacktestResult) -> None:
         f.write(json.dumps(summary, ensure_ascii=False) + "\n")
 
 
+def interval_seconds(config: AppConfig) -> int:
+    """Saved UI setting: backtest_interval_minutes (1–1440)."""
+    mins = max(1, min(1440, int(config.backtest_interval_minutes or 60)))
+    return mins * 60
+
+
 def _strategy_bar(config: AppConfig) -> str:
     modes = active_strategies(config)
     if StrategyMode.SWING in modes and StrategyMode.SCALP not in modes:
@@ -202,30 +208,37 @@ async def start_backtest(
 
 
 async def _background_loop() -> None:
-    """Run backtest on interval while server is up; results accumulate in history."""
-    delay = max(30, settings.backtest_start_delay_sec)
-    interval = max(300, settings.backtest_interval_sec)
-    await asyncio.sleep(delay)
+    """Server start -> run backtest in a loop until shutdown (no button needed)."""
+    delay = max(0, min(30, settings.backtest_start_delay_sec))
+    if delay > 0:
+        await asyncio.sleep(delay)
 
     while True:
+        interval = 3600
         try:
             if _config_supplier is None:
-                await asyncio.sleep(interval)
+                await asyncio.sleep(10)
                 continue
             if _status.running:
-                await asyncio.sleep(60)
+                await asyncio.sleep(15)
                 continue
             cfg = _config_supplier()
+            interval = interval_seconds(cfg)
             if not settings.backtest_auto_run:
                 await asyncio.sleep(interval)
                 continue
             _status.phase = "scheduled"
-            _status.message = "자동 백테스트 예약 실행"
+            _status.message = "자동 백테스트 실행"
             await _run_job(cfg, [], settings.backtest_candle_limit, settings.backtest_optimize)
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.warning("Background backtest error: %s", e)
+            if _config_supplier:
+                try:
+                    interval = interval_seconds(_config_supplier())
+                except Exception:
+                    interval = max(60, settings.backtest_interval_sec)
         await asyncio.sleep(interval)
 
 
@@ -236,9 +249,8 @@ def start_background_loop(config_supplier: Callable[[], AppConfig]) -> None:
         return
     _background_task = asyncio.create_task(_background_loop())
     logger.info(
-        "Backtest background loop started (delay=%ss interval=%ss)",
+        "Backtest background loop started (delay=%ss, interval from config minutes)",
         settings.backtest_start_delay_sec,
-        settings.backtest_interval_sec,
     )
 
 

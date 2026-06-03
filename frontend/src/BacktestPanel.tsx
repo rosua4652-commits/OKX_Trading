@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { applyBacktest, fetchBacktestStatus, runBacktest } from "./api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { applyBacktest, fetchBacktestStatus, runBacktest, updateConfig } from "./api";
 import { BacktestCandlesGrid, TradeMiniCandle } from "./BacktestCandles";
 import { fmtNum } from "./format";
 import type { AppConfig, BacktestBundle } from "./types";
@@ -9,16 +9,40 @@ export function BacktestPanel({
   bundle,
   onRefresh,
   onConfigApplied,
+  onPatchConfig,
 }: {
   config: AppConfig;
   bundle: BacktestBundle | null | undefined;
   onRefresh: () => void;
   onConfigApplied: (minScore: number) => void;
+  onPatchConfig: (patch: Partial<AppConfig>) => void;
 }) {
   const [running, setRunning] = useState(bundle?.status?.running ?? false);
   const [msg, setMsg] = useState("");
   const [candleLimit, setCandleLimit] = useState(200);
   const [optimize, setOptimize] = useState(true);
+  const intervalMin =
+    bundle?.interval_minutes ?? config.backtest_interval_minutes ?? 60;
+  const saveIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const scheduleIntervalSave = useCallback(
+    (minutes: number) => {
+      onPatchConfig({ backtest_interval_minutes: minutes });
+      if (saveIntervalRef.current) clearTimeout(saveIntervalRef.current);
+      saveIntervalRef.current = setTimeout(async () => {
+        await updateConfig({ ...config, backtest_interval_minutes: minutes });
+        onRefresh();
+      }, 400);
+    },
+    [config, onPatchConfig, onRefresh],
+  );
+
+  useEffect(
+    () => () => {
+      if (saveIntervalRef.current) clearTimeout(saveIntervalRef.current);
+    },
+    [],
+  );
 
   const result = bundle?.result ?? null;
   const status = bundle?.status;
@@ -97,6 +121,20 @@ export function BacktestPanel({
           />
           min_score 자동 탐색
         </label>
+        <label>
+          자동 주기(분)
+          <input
+            type="number"
+            min={1}
+            max={1440}
+            value={intervalMin}
+            onChange={(e) => {
+              const v = Math.max(1, Math.min(1440, Number(e.target.value) || 60));
+              scheduleIntervalSave(v);
+            }}
+            title="서버 켜지면 바로 시작, 완료 후 이 간격으로 무한 반복"
+          />
+        </label>
         {status && (
           <span className="bt-progress">
             {status.phase} {status.progress_pct > 0 ? `${fmtNum(status.progress_pct, 0)}%` : ""}
@@ -107,8 +145,8 @@ export function BacktestPanel({
       {msg && <p className="bt-msg">{msg}</p>}
 
       <p className="bt-auto-hint">
-        {bundle?.auto_run
-          ? `서버 실행 중 자동 백테스트 (약 ${Math.round((bundle.interval_sec ?? 3600) / 60)}분마다) · backend/data/backtest_history.jsonl`
+        {bundle?.auto_run !== false
+          ? `서버 시작 시 자동 백테스트 → 완료 후 ${intervalMin}분마다 무한 반복 (버튼 불필요) · backend/data/backtest_history.jsonl`
           : "자동 백테스트 꺼짐 (.env OAT_BACKTEST_AUTO_RUN=1)"}
         {config.backtest_auto_settings && (
           <>

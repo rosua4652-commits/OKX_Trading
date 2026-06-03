@@ -59,6 +59,7 @@ class AppConfig(BaseModel):
     scan_symbols: list[str] = Field(default_factory=lambda: ["BTC-USDT-SWAP", "ETH-USDT-SWAP"])
     min_score: float = 55.0
     backtest_auto_settings: bool = False
+    backtest_interval_minutes: int = Field(default=60, ge=1, le=1440)
     paper_initial_balance: float = 10_000.0
     okx_api_key: str = ""
     okx_api_secret: str = ""

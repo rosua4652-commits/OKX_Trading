@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     trading_fee_pct: float = 0.05
     backtest_auto_run: bool = True
     backtest_interval_sec: int = 3600
-    backtest_start_delay_sec: int = 90
+    backtest_start_delay_sec: int = 5
     backtest_candle_limit: int = 200
     backtest_optimize: bool = True
     okx_api_key: str = ""

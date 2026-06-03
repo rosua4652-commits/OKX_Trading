@@ -70,6 +70,7 @@ export interface AppConfig {
   allow_short: boolean;
   min_score: number;
   backtest_auto_settings?: boolean;
+  backtest_interval_minutes?: number;
   scan_symbols?: string[];
   paper_initial_balance: number;
   okx_api_key: string;
@@ -196,6 +197,7 @@ export interface BacktestBundle {
   history?: BacktestHistoryEntry[];
   auto_run?: boolean;
   interval_sec?: number;
+  interval_minutes?: number;
 }
 
 export interface StatusData {
