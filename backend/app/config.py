@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     trailing_activate_pct: float = 1.5
     trailing_distance_pct: float = 0.8
     trading_fee_pct: float = 0.05
+    backtest_auto_run: bool = True
+    backtest_interval_sec: int = 3600
+    backtest_start_delay_sec: int = 90
+    backtest_candle_limit: int = 200
+    backtest_optimize: bool = True
     okx_api_key: str = ""
     okx_api_secret: str = ""
     okx_passphrase: str = ""

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   CandlestickSeries,
   ColorType,
@@ -36,11 +36,23 @@ export type ChartLevels = {
   entryTime?: string;
 };
 
-export function MiniCandles({ bars }: { bars: OhlcBar[] }) {
+export type MiniCandleMarker = { entry?: number; exit?: number };
+
+export function MiniCandles({
+  bars,
+  markers,
+  width = 100,
+  height = 36,
+}: {
+  bars: OhlcBar[];
+  markers?: MiniCandleMarker[];
+  width?: number;
+  height?: number;
+}) {
   if (!bars || bars.length < 2) return <span className="sparkline-empty">—</span>;
 
-  const w = 100;
-  const h = 36;
+  const w = width;
+  const h = height;
   const pad = 2;
   const highs = bars.map((b) => b.h);
   const lows = bars.map((b) => b.l);
@@ -67,6 +79,22 @@ export function MiniCandles({ bars }: { bars: OhlcBar[] }) {
             <rect x={x} y={bodyTop} width={bw} height={bodyH} fill={color} />
           </g>
         );
+      })}
+      {markers?.map((m, mi) => {
+        const items: React.ReactElement[] = [];
+        if (m.entry != null && m.entry >= 0 && m.entry < bars.length) {
+          const x = pad + m.entry * (bw + 1) + bw / 2;
+          items.push(
+            <line key={`e${mi}`} x1={x} y1={pad} x2={x} y2={h - pad} stroke="#58a6ff" strokeWidth={1} strokeDasharray="2 1" />,
+          );
+        }
+        if (m.exit != null && m.exit >= 0 && m.exit < bars.length) {
+          const x = pad + m.exit * (bw + 1) + bw / 2;
+          items.push(
+            <line key={`x${mi}`} x1={x} y1={pad} x2={x} y2={h - pad} stroke="#d29922" strokeWidth={1} strokeDasharray="2 1" />,
+          );
+        }
+        return items;
       })}
     </svg>
   );

@@ -69,6 +69,8 @@ export interface AppConfig {
   trailing_stop: boolean;
   allow_short: boolean;
   min_score: number;
+  backtest_auto_settings?: boolean;
+  scan_symbols?: string[];
   paper_initial_balance: number;
   okx_api_key: string;
   okx_api_secret: string;
@@ -95,6 +97,107 @@ export interface TradeRecord {
   ts: string;
 }
 
+export interface BacktestTrial {
+  min_score: number;
+  total_pnl: number;
+  win_rate: number;
+  trades: number;
+  long_entries: number;
+  short_entries: number;
+}
+
+export interface BacktestRecommendation {
+  min_score: number;
+  reason: string;
+  trials: BacktestTrial[];
+}
+
+export interface BacktestMetrics {
+  total_pnl: number;
+  total_pnl_pct: number;
+  win_rate: number;
+  trade_count: number;
+  long_trades: number;
+  short_trades: number;
+  avg_score_entries: number;
+  max_drawdown_pct: number;
+  bars_evaluated: number;
+}
+
+export interface BacktestTrade {
+  inst_id: string;
+  side: string;
+  strategy: string;
+  entry_bar: number;
+  exit_bar: number;
+  entry_price: number;
+  exit_price: number;
+  score: number;
+  sl_pct: number;
+  tp_pct: number;
+  pnl_usdt: number;
+  pnl_pct: number;
+  exit_reason: string;
+}
+
+export interface BacktestLogEntry {
+  ts: string;
+  level: string;
+  message: string;
+}
+
+export interface SymbolCandleChart {
+  bars: { o: number; h: number; l: number; c: number }[];
+  total_bars: number;
+  display_offset: number;
+  trade_markers?: { entry: number; exit: number }[];
+}
+
+export interface BacktestResult {
+  id: string;
+  status: string;
+  started_at: string;
+  finished_at?: string;
+  strategy_mode: string;
+  symbols: string[];
+  candle_interval?: string;
+  symbol_charts?: Record<string, SymbolCandleChart>;
+  params_snapshot?: Record<string, unknown>;
+  metrics?: BacktestMetrics;
+  recommendation?: BacktestRecommendation;
+  trades?: BacktestTrade[];
+  logs?: BacktestLogEntry[];
+  error?: string;
+}
+
+export interface BacktestStatus {
+  running: boolean;
+  progress_pct: number;
+  phase: string;
+  message: string;
+  result_id?: string;
+}
+
+export interface BacktestHistoryEntry {
+  id: string;
+  finished_at: string;
+  status: string;
+  strategy_mode: string;
+  symbols: string[];
+  metrics?: BacktestMetrics;
+  recommendation?: { min_score: number; reason?: string };
+  trade_count: number;
+  error?: string;
+}
+
+export interface BacktestBundle {
+  status: BacktestStatus;
+  result: BacktestResult | null;
+  history?: BacktestHistoryEntry[];
+  auto_run?: boolean;
+  interval_sec?: number;
+}
+
 export interface StatusData {
   build: string;
   config: AppConfig;
@@ -110,4 +213,5 @@ export interface StatusData {
   portfolio_sync_message?: string;
   next_order_size_usdt?: number;
   trades?: TradeRecord[];
+  backtest?: BacktestBundle;
 }

@@ -44,6 +44,13 @@ class BacktestRecommendation(BaseModel):
     trials: list[BacktestScoreTrial] = Field(default_factory=list)
 
 
+class SymbolCandleChart(BaseModel):
+    bars: list[dict[str, float]] = Field(default_factory=list)
+    total_bars: int = 0
+    display_offset: int = 0
+    trade_markers: list[dict[str, int]] = Field(default_factory=list)
+
+
 class BacktestMetrics(BaseModel):
     total_pnl: float = 0.0
     total_pnl_pct: float = 0.0
@@ -64,6 +71,8 @@ class BacktestResult(BaseModel):
     strategy_mode: str
     symbols: list[str] = Field(default_factory=list)
     candle_bars: int = 0
+    candle_interval: str = "5m"
+    symbol_charts: dict[str, SymbolCandleChart] = Field(default_factory=dict)
     params_snapshot: dict[str, Any] = Field(default_factory=dict)
     metrics: BacktestMetrics = Field(default_factory=BacktestMetrics)
     recommendation: Optional[BacktestRecommendation] = None

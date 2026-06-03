@@ -43,6 +43,9 @@ OKX API 키 발급: https://www.okx.com/account/my-api
 | `run-with-log.bat` | 서버 실행 + `logs/`에 로그 저장 |
 | `restart-server.bat` | 기존 서버 종료 후 로그 모드로 재시작 |
 | `stop-server.bat` | `.env`의 `OAT_PORT` 리스닝 프로세스 종료 |
+| `update-zip.bat` | GitHub ZIP으로 코드 동기화 (data·.env 유지) + npm build |
+| `git-pull-sync.bat` | `git pull --rebase` (원격 반영) |
+| `git-push.bat` | fetch + rebase 후 push |
 
 ```bash
 chmod +x run.sh

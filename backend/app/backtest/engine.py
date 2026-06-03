@@ -21,6 +21,7 @@ from app.models import (
     StrategyMode,
 )
 from app.strategy_utils import active_strategies, sl_tp_pcts
+from app.backtest.candles_util import build_symbol_charts
 from app.backtest.models import (
     BacktestLogEntry,
     BacktestMetrics,
@@ -428,6 +429,15 @@ def build_result(
     )
 
     candle_bars = max((len(c) for c in symbol_candles.values()), default=0)
+    strat_list = active_strategies(config)
+    if StrategyMode.SWING in strat_list and StrategyMode.SCALP not in strat_list:
+        interval = "1H"
+    elif StrategyMode.SCALP in strat_list and StrategyMode.SWING in strat_list:
+        interval = "5m/1H"
+    else:
+        interval = "5m"
+    charts = build_symbol_charts(symbol_candles, state.trades)
+
     return BacktestResult(
         id=rid,
         status="done",
@@ -436,6 +446,8 @@ def build_result(
         strategy_mode=config.strategy_mode.value,
         symbols=symbols,
         candle_bars=candle_bars,
+        candle_interval=interval,
+        symbol_charts=charts,
         params_snapshot={
             "min_score": config.min_score,
             "min_score_applied": min_run,

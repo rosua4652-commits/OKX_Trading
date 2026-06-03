@@ -32,6 +32,7 @@ import {
   strategyModesFromToggle,
   swingEnabled,
 } from "./strategy";
+import { BacktestPanel } from "./BacktestPanel";
 import { PositionSlTpEditor } from "./PositionSlTpEditor";
 import { RsiGauge } from "./Sparkline";
 import type { AppConfig, CoinCandidate, Position, StatusData, TradeRecord } from "./types";
@@ -45,7 +46,7 @@ function App() {
   const [expandedCandidateId, setExpandedCandidateId] = useState<string | null>(null);
   const [chartTarget, setChartTarget] = useState<ChartViewTarget | null>(null);
   const [configSaveStatus, setConfigSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
-  const [mainTab, setMainTab] = useState<"trade" | "exits">("trade");
+  const [mainTab, setMainTab] = useState<"trade" | "exits" | "backtest">("trade");
   const [exitFilter, setExitFilter] = useState<"all" | "sl" | "tp" | "other">("all");
   const configLockedRef = useRef(false);
 
@@ -325,6 +326,16 @@ function App() {
             <span className="tab-count">{data.trades?.length}</span>
           )}
         </button>
+        <button
+          type="button"
+          className={mainTab === "backtest" ? "active" : ""}
+          onClick={() => setMainTab("backtest")}
+        >
+          백테스트
+          {data.backtest?.status?.running && (
+            <span className="tab-count">…</span>
+          )}
+        </button>
       </nav>
 
       {settingsOpen && (
@@ -357,9 +368,13 @@ function App() {
               />
             </div>
             <div className="settings-row">
-              <label>주문 크기 방식</label>
+              <label>
+                주문 크기 방식
+                {config.backtest_auto_settings ? " (자동→가용%)" : ""}
+              </label>
               <select
                 value={config.position_size_mode || "fixed"}
+                disabled={!!config.backtest_auto_settings}
                 onChange={(e) => patchConfig({ position_size_mode: e.target.value })}
               >
                 <option value="fixed">고정 USDT</option>
@@ -452,10 +467,38 @@ function App() {
                 <option value="short">숏만</option>
               </select>
             </div>
+            <div className="settings-row settings-check-block">
+              <label className="settings-check">
+                <input
+                  type="checkbox"
+                  checked={!!config.backtest_auto_settings}
+                  onChange={(e) =>
+                    patchConfig({ backtest_auto_settings: e.target.checked })
+                  }
+                />
+                <span>
+                  <strong>백테스트 유동 설정 (자동)</strong>
+                  <br />
+                  <span className="settings-check-desc">
+                    체크 시: 백테스트가 끝날 때마다 추천 min_score·가용잔고 % 주문이 자동 반영됩니다.
+                    「추천 점수 적용」 버튼 없이 봇이 그 설정으로 진입합니다.
+                  </span>
+                </span>
+              </label>
+            </div>
             <div className="settings-row">
-              <label>최소 점수</label>
-              <input type="number" value={config.min_score}
-                onChange={(e) => patchConfig({ min_score: Number(e.target.value) })} />
+              <label>최소 점수 {config.backtest_auto_settings ? "(자동)" : "(수동 고정)"}</label>
+              <input
+                type="number"
+                value={config.min_score}
+                disabled={!!config.backtest_auto_settings}
+                title={
+                  config.backtest_auto_settings
+                    ? "백테스트 자동 설정이 켜져 있어 백테스트 결과로 갱신됩니다"
+                    : ""
+                }
+                onChange={(e) => patchConfig({ min_score: Number(e.target.value) })}
+              />
             </div>
             <div className="settings-row">
               <label>데모 모드</label>
@@ -506,7 +549,14 @@ function App() {
         </div>
       )}
 
-      {mainTab === "exits" ? (
+      {mainTab === "backtest" ? (
+        <BacktestPanel
+          config={config}
+          bundle={data.backtest ?? null}
+          onRefresh={refresh}
+          onConfigApplied={(minScore) => patchConfig({ min_score: minScore })}
+        />
+      ) : mainTab === "exits" ? (
         <ExitHistoryPanel
           trades={data.trades ?? []}
           filter={exitFilter}

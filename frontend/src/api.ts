@@ -69,6 +69,36 @@ export async function resetPositionSlTpAuto(
   return res.json();
 }
 
+export async function runBacktest(body: {
+  symbols?: string[];
+  candle_limit?: number;
+  optimize?: boolean;
+}): Promise<{ ok: boolean; message?: string }> {
+  const res = await fetch(`${BASE}/api/backtest/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return res.json();
+}
+
+export async function fetchBacktestStatus(): Promise<{
+  status: import("./types").BacktestStatus;
+  result: import("./types").BacktestResult | null;
+}> {
+  const res = await fetch(`${BASE}/api/backtest/status`);
+  return res.json();
+}
+
+export async function applyBacktest(): Promise<{
+  ok: boolean;
+  message?: string;
+  min_score?: number;
+}> {
+  const res = await fetch(`${BASE}/api/backtest/apply`, { method: "POST" });
+  return res.json();
+}
+
 export async function closePosition(instId: string) {
   const res = await fetch(`${BASE}/api/order/close`, {
     method: "POST",

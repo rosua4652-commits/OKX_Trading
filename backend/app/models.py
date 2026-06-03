@@ -58,6 +58,7 @@ class AppConfig(BaseModel):
     position_side: PositionSideMode = PositionSideMode.AUTO
     scan_symbols: list[str] = Field(default_factory=lambda: ["BTC-USDT-SWAP", "ETH-USDT-SWAP"])
     min_score: float = 55.0
+    backtest_auto_settings: bool = False
     paper_initial_balance: float = 10_000.0
     okx_api_key: str = ""
     okx_api_secret: str = ""

@@ -68,6 +68,75 @@ header .build {
 .badge.close-other { background: #30363d; color: #8b949e; }
 .ts-cell { font-size: 0.8rem; color: #8b949e; white-space: nowrap; }
 
+.backtest-panel { margin-bottom: 24px; }
+.backtest-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.backtest-toolbar label { font-size: 0.8rem; color: #8b949e; display: flex; gap: 6px; align-items: center; }
+.backtest-toolbar input[type="number"] {
+  width: 64px;
+  padding: 4px 6px;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  color: #e6edf3;
+  border-radius: 4px;
+}
+.bt-progress { font-size: 0.8rem; color: #58a6ff; }
+.bt-msg { color: #d29922; font-size: 0.875rem; margin-bottom: 12px; }
+.backtest-summary { margin-bottom: 16px; }
+.backtest-summary .sub { font-size: 0.8rem; color: #8b949e; margin-top: 4px; }
+.bt-split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 900px) { .bt-split { grid-template-columns: 1fr; } }
+.bt-scroll, .bt-log-scroll {
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+}
+.bt-log-scroll { padding: 8px; background: #0d1117; }
+.bt-note { font-size: 0.75rem; color: #6e7681; margin-top: 12px; }
+.bt-auto-hint { font-size: 0.8rem; color: #58a6ff; margin-bottom: 12px; }
+.settings-check-block { grid-column: 1 / -1; }
+.settings-check {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  cursor: pointer;
+  font-size: 0.875rem;
+}
+.settings-check input { margin-top: 4px; }
+.settings-check-desc { color: #8b949e; font-size: 0.75rem; font-weight: normal; }
+.settings-row input:disabled { opacity: 0.5; cursor: not-allowed; }
+tr.row-best { background: #1f6feb22; }
+
+.bt-candles-section h2 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.bt-candles-meta { font-size: 0.75rem; font-weight: normal; color: #8b949e; }
+.bt-candles-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 10px;
+}
+.bt-candle-card {
+  background: #161b22;
+  border: 1px solid #21262d;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.bt-candle-title {
+  font-size: 0.7rem;
+  color: #8b949e;
+  margin-bottom: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bt-candle-sub { font-size: 0.65rem; color: #6e7681; margin-top: 4px; }
+.mini-candles { display: block; }
+
 .sl-tp-col { min-width: 200px; vertical-align: top; }
 .sl-tp-editor { font-size: 0.75rem; line-height: 1.35; }
 .sl-tp-editor .muted { color: #8b949e; font-size: 0.7rem; margin-top: 2px; }

@@ -27,6 +27,18 @@ from app.models import (
     StrategyMode,
     TradeMode,
 )
+from app.backtest.auto_apply import build_config_from_backtest, config_changed
+from app.backtest.models import BacktestResult
+from app.backtest.runner import (
+    apply_recommendation,
+    get_history,
+    get_latest,
+    get_status as backtest_status,
+    set_auto_apply_handler,
+    start_backtest,
+    start_background_loop,
+    stop_background_loop,
+)
 from app.config_public import config_for_client, merge_config_update
 from app.engine.portfolio_store import store
 from app.storage.user_settings import load_settings, save_settings
@@ -76,7 +88,21 @@ async def lifespan(app: FastAPI):
     global _broadcast_task
     engine.bind_portfolio()
     _broadcast_task = asyncio.create_task(_broadcast_loop())
+
+    def _on_backtest_complete(result: BacktestResult) -> None:
+        before = engine.config
+        updated = build_config_from_backtest(before, result)
+        if updated is None:
+            return
+        if not config_changed(before, updated):
+            return
+        engine.apply_config(updated, "백테스트 자동 적용")
+        save_settings(engine.config)
+
+    set_auto_apply_handler(_on_backtest_complete)
+    start_background_loop(lambda: engine.config)
     yield
+    stop_background_loop()
     if _broadcast_task:
         _broadcast_task.cancel()
         try:
@@ -113,6 +139,15 @@ async def status():
         ps,
         open_positions=len(ps.positions),
     )
+    bt = backtest_status()
+    latest = get_latest()
+    data["backtest"] = {
+        "status": bt.model_dump(),
+        "result": latest.model_dump() if latest else None,
+        "history": get_history(20),
+        "auto_run": app_settings.backtest_auto_run,
+        "interval_sec": app_settings.backtest_interval_sec,
+    }
     return data
 
 
@@ -324,6 +359,67 @@ async def get_candles(inst_id: str, strategy: str = "scalp", side: str = "long")
 async def get_trades():
     engine.bind_portfolio()
     return {"trades": [t.model_dump() for t in engine.portfolio.trades[-50:]]}
+
+
+class BacktestRunRequest(BaseModel):
+    symbols: list[str] = []
+    candle_limit: int = 200
+    optimize: bool = True
+
+
+@api.post("/backtest/run")
+async def backtest_run(req: BacktestRunRequest = BacktestRunRequest()):
+    ok, msg = await start_backtest(
+        engine.config,
+        req.symbols or None,
+        req.candle_limit,
+        req.optimize,
+    )
+    return {"ok": ok, "message": msg}
+
+
+@api.get("/backtest/status")
+async def backtest_get_status():
+    st = backtest_status()
+    latest = get_latest()
+    return {
+        "status": st.model_dump(),
+        "result": latest.model_dump() if latest else None,
+    }
+
+
+@api.get("/backtest/latest")
+async def backtest_latest():
+    latest = get_latest()
+    if not latest:
+        return {"ok": False, "message": "결과 없음"}
+    return {"ok": True, "result": latest.model_dump()}
+
+
+@api.get("/backtest/history")
+async def backtest_history(limit: int = 30):
+    return {"history": get_history(limit)}
+
+
+@api.post("/backtest/apply")
+async def backtest_apply():
+    latest = get_latest()
+    if not latest:
+        return {"ok": False, "message": "적용할 백테스트 결과 없음"}
+    updated = build_config_from_backtest(engine.config, latest)
+    if updated is None:
+        if not latest.recommendation:
+            return {"ok": False, "message": "추천 없음"}
+        updated = engine.config.model_copy(deep=True)
+        updated.min_score = float(latest.recommendation.min_score)
+    engine.apply_config(updated, "백테스트 추천 적용")
+    save_settings(engine.config)
+    return {
+        "ok": True,
+        "message": f"min_score={engine.config.min_score}, 주문={engine.config.position_size_mode}",
+        "min_score": engine.config.min_score,
+        "config": config_for_client(engine.config),
+    }
 
 
 app.include_router(api)

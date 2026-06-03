@@ -153,6 +153,51 @@ try {
     }
 
     Write-Host ""
+    Write-Host "Fetching remote ..."
+    Invoke-Git -Args @("fetch", "origin", $Branch)
+
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    git rev-parse --verify "origin/$Branch" 2>&1 | Out-Null
+    $hasRemote = ($LASTEXITCODE -eq 0)
+    $ErrorActionPreference = $prev
+
+    if ($hasRemote) {
+        $stashNeeded = $false
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        git diff --quiet 2>&1 | Out-Null
+        $dirty = ($LASTEXITCODE -ne 0)
+        git diff --cached --quiet 2>&1 | Out-Null
+        $staged = ($LASTEXITCODE -ne 0)
+        $ErrorActionPreference = $prev
+        if ($dirty -or $staged) {
+            Write-Host "Stashing local changes before rebase ..."
+            Invoke-Git -Args @("stash", "push", "-m", "oat-push-$(Get-Date -Format 'yyyyMMdd-HHmmss')")
+            $stashNeeded = $true
+        }
+
+        Write-Host "Rebasing onto origin/$Branch ..."
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        git pull --rebase origin $Branch 2>&1 | ForEach-Object { Write-Host $_ }
+        if ($LASTEXITCODE -ne 0) {
+            $ErrorActionPreference = $prev
+            if ($stashNeeded) { git stash pop 2>&1 | Out-Null }
+            throw "git pull --rebase failed — run git-pull-sync.bat or fix conflicts, then push again"
+        }
+        $ErrorActionPreference = $prev
+
+        if ($stashNeeded) {
+            Write-Host "Restoring stashed changes ..."
+            $prev = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            git stash pop 2>&1 | ForEach-Object { Write-Host $_ }
+            $ErrorActionPreference = $prev
+        }
+    }
+
+    Write-Host ""
     Write-Host "Pushing to GitHub ..."
     Invoke-Git -Args @("push", "-u", "origin", $Branch)
 

@@ -28,6 +28,7 @@ _LABELS: dict[str, str] = {
     "allow_short": "숏 허용",
     "position_side": "진입 방향",
     "min_score": "최소 점수",
+    "backtest_auto_settings": "백테스트 자동설정",
     "paper_initial_balance": "모의 초기자금",
     "okx_flag": "OKX API 환경",
     "scan_symbols": "스캔 종목",
@@ -41,6 +42,8 @@ def _fmt_val(key: str, val: Any) -> str:
         return "모의투자" if val == "paper" else "실거래"
     if key == "okx_flag":
         return "데모" if str(val) == "1" else "실거래 API"
+    if key == "backtest_auto_settings":
+        return "유동(자동)" if val else "수동(고정)"
     if key == "position_size_mode":
         m = {
             "fixed": "고정 USDT",

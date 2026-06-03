@@ -16,6 +16,7 @@ from app.order_sizing import resolve_order_size_usdt
 from app.strategy_utils import active_strategies
 from app.engine.portfolio import PortfolioManager
 from app.engine.portfolio_store import store
+from app.entry_signals import resolve_entry_side
 from app.engine.risk_manager import check_entry_allowed
 from app.market.data_provider import market
 from app.market.entry_analyzer import analyze_batch
@@ -129,7 +130,7 @@ class TradingEngine:
         linked = False
         if self._has_keys() and self._link_message and "실패" not in self._link_message and "오류" not in self._link_message:
             linked = "연결" in self._link_message or self._link_message.lower().startswith("ok")
-        return {
+        out: dict = {
             "config": config_for_client(self.config),
             "bot": self.bot.model_dump(),
             "portfolio": snap.model_dump(),
@@ -140,6 +141,22 @@ class TradingEngine:
             "portfolio_sync_message": self._portfolio_sync_message,
             "trades": [t.model_dump() for t in self.portfolio.trades[-200:]],
         }
+        try:
+            from app.backtest.runner import get_history, get_latest, get_status as bt_status
+            from app.config import settings as app_settings
+
+            bt = bt_status()
+            latest = get_latest()
+            out["backtest"] = {
+                "status": bt.model_dump(),
+                "result": latest.model_dump() if latest else None,
+                "history": get_history(20),
+                "auto_run": app_settings.backtest_auto_run,
+                "interval_sec": app_settings.backtest_interval_sec,
+            }
+        except Exception:
+            pass
+        return out
 
     def apply_config(self, config: AppConfig, source: str = "설정") -> None:
         old = self.config.model_copy(deep=True)
@@ -247,36 +264,7 @@ class TradingEngine:
                 await self._close_position(inst_id, reason)
 
     def _resolve_entry_side(self, cand: CoinCandidate) -> PositionSide | None:
-        mode = self.config.position_side
-        if mode == PositionSideMode.LONG:
-            if cand.outlook == "short":
-                return None
-            return PositionSide.LONG
-        if mode == PositionSideMode.SHORT:
-            if self.config.instrument_type == InstrumentType.SPOT:
-                return None
-            if not self.config.allow_short:
-                return None
-            if cand.outlook == "short" or cand.short_scalp_ok or cand.short_swing_ok:
-                return PositionSide.SHORT
-            return None
-
-        # AUTO: 숏 신호 우선 (하락·과열), 그다음 롱
-        if self.config.allow_short and self.config.instrument_type != InstrumentType.SPOT:
-            if cand.outlook == "short":
-                return PositionSide.SHORT
-            if cand.short_scalp_ok or cand.short_swing_ok:
-                return PositionSide.SHORT
-            if cand.trend == "down" and cand.rsi >= 52 and cand.change_24h_pct < -2:
-                return PositionSide.SHORT
-            if cand.rsi >= 65 and cand.trend in ("down", "sideways"):
-                return PositionSide.SHORT
-
-        if cand.outlook == "long" or cand.scalp_ok or cand.swing_ok:
-            return PositionSide.LONG
-        if cand.score >= self.config.min_score and cand.trend in ("strong_up", "up"):
-            return PositionSide.LONG
-        return None
+        return resolve_entry_side(self.config, cand)
 
     async def _auto_enter(self, candidates: list[CoinCandidate]) -> None:
         snap = self.portfolio.snapshot()
