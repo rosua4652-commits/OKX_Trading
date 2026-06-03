@@ -4,7 +4,8 @@ __pycache__/
 venv/
 .env
 *.log
-logs/
+logs/*
+!logs/.gitkeep
 backend/data/
 node_modules/
 frontend/dist/

@@ -4,26 +4,34 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 from typing import Callable, Optional
 
 from app.config import settings
+from app.contract_sizing import swap_contract_count, swap_notional_usdt, swap_margin_usdt
 from app.engine.activity_log import push_activity
+from app.config_changelog import format_config_changes
+from app.config_public import config_for_client
 from app.engine.exit_rules import apply_strategy_defaults, should_exit
+from app.order_sizing import resolve_order_size_usdt
+from app.strategy_utils import active_strategies
 from app.engine.portfolio import PortfolioManager
 from app.engine.portfolio_store import store
 from app.engine.risk_manager import check_entry_allowed
 from app.market.data_provider import market
 from app.market.entry_analyzer import analyze_batch
+from app.market.dynamic_sl_tp import compute_dynamic_sl_tp
+from app.market.live_account import sync_live_portfolio
 from app.market.live_exchange import live_close, live_open
 from app.market.scanner import scan_market, top_symbols
 from app.models import (
     AppConfig,
     BotState,
     CoinCandidate,
+    InstrumentType,
     ManualOrderRequest,
     PortfolioSnapshot,
     PositionSide,
+    PositionSideMode,
     StrategyMode,
     TradeMode,
     utc_now_iso,
@@ -42,6 +50,7 @@ class TradingEngine:
         self._task: Optional[asyncio.Task] = None
         self._listeners: list[Callable[[], None]] = []
         self._link_message = ""
+        self._portfolio_sync_message = ""
 
     def bind_portfolio(self) -> None:
         self.portfolio = store.get(self.config.trade_mode)
@@ -73,38 +82,97 @@ class TradingEngine:
     async def prices_map(self) -> dict[str, float]:
         return await market.price_map(self.config.instrument_type)
 
+    async def _refresh_dynamic_sl_tp_all(self) -> None:
+        for inst_id, pos in list(self.portfolio.positions.items()):
+            if pos.sl_tp_manual or pos.entry_price <= 0:
+                continue
+            strat = pos.strategy_mode
+            if strat == StrategyMode.BOTH:
+                strat = StrategyMode.SCALP
+            try:
+                plan = await compute_dynamic_sl_tp(
+                    inst_id,
+                    pos.entry_price,
+                    pos.side,
+                    strat,
+                    self.config,
+                )
+                self.portfolio.apply_sl_tp_plan(inst_id, plan)
+            except Exception as e:
+                self._log("sync", f"SL/TP 갱신 실패 {inst_id}: {e}", "warn")
+
+    async def _sync_live_if_needed(self) -> None:
+        if not self._is_live():
+            self._portfolio_sync_message = ""
+            return
+        if not self._has_keys():
+            self._portfolio_sync_message = "실거래: API 키를 설정·저장하세요"
+            return
+        ok, msg = sync_live_portfolio(self.portfolio, self.config)
+        self._portfolio_sync_message = msg
+        if ok:
+            logger.debug(msg)
+        else:
+            self._log("sync", msg, "warn")
+
     async def get_status(self) -> dict:
         self.bind_portfolio()
+        if self._is_live():
+            await self._sync_live_if_needed()
+        await self._refresh_dynamic_sl_tp_all()
         prices = await self.prices_map()
-        self.portfolio.update_prices(prices)
+        if not self._is_live():
+            self.portfolio.update_prices(prices)
+        elif self.portfolio.positions:
+            self.portfolio.update_prices(prices)
         snap = self.portfolio.snapshot()
         linked = False
-        if self._is_live() and self._has_keys():
-            linked = True
+        if self._has_keys() and self._link_message and "실패" not in self._link_message and "오류" not in self._link_message:
+            linked = "연결" in self._link_message or self._link_message.lower().startswith("ok")
         return {
-            "config": self.config.model_dump(),
+            "config": config_for_client(self.config),
             "bot": self.bot.model_dump(),
             "portfolio": snap.model_dump(),
             "candidates": [c.model_dump() for c in self.candidates[:20]],
             "linked": linked,
             "link_message": self._link_message,
+            "portfolio_source": "okx" if self._is_live() else "paper",
+            "portfolio_sync_message": self._portfolio_sync_message,
+            "trades": [t.model_dump() for t in self.portfolio.trades[-200:]],
         }
 
-    def update_config(self, config: AppConfig) -> None:
+    def apply_config(self, config: AppConfig, source: str = "설정") -> None:
+        old = self.config.model_copy(deep=True)
         self.config = apply_strategy_defaults(config)
+        changes = format_config_changes(old, self.config)
+        if changes:
+            self._log("config", f"[{source}] " + " | ".join(changes))
         self._notify()
 
-    async def start_bot(self, auto_invest: bool | None = None, strategy: StrategyMode | None = None) -> None:
+    def update_config(self, config: AppConfig) -> None:
+        self.apply_config(config, "설정 저장")
+
+    async def start_bot(
+        self,
+        auto_invest: bool | None = None,
+        strategy: StrategyMode | None = None,
+        position_side: PositionSideMode | None = None,
+    ) -> None:
         if auto_invest is not None:
             self.config.auto_invest = auto_invest
         if strategy is not None:
             self.config.strategy_mode = strategy
             apply_strategy_defaults(self.config)
+        if position_side is not None:
+            self.config.position_side = position_side
         if self.bot.status.running:
             return
         self.bot.status.running = True
         self.bot.status.message = "봇 시작"
-        self._log("start", f"자동매매 시작 ({self.config.strategy_mode.value}, {self.config.instrument_type.value})")
+        strat_label = self.config.strategy_mode.value
+        if self.config.strategy_mode == StrategyMode.BOTH:
+            strat_label = "단타+장타"
+        self._log("start", f"자동매매 시작 ({strat_label}, {self.config.instrument_type.value})")
         self._task = asyncio.create_task(self._run_loop())
         self._notify()
 
@@ -131,6 +199,8 @@ class TradingEngine:
 
     async def _tick(self) -> None:
         self.bind_portfolio()
+        if self._is_live():
+            await self._sync_live_if_needed()
         self.bot.status.scan_count += 1
         self.bot.status.last_scan = utc_now_iso()
         self._log("scan", f"시장 스캔 #{self.bot.status.scan_count}")
@@ -151,7 +221,13 @@ class TradingEngine:
             self.config.strategy_mode,
         )
         self.candidates = analyzed
-        self._log("scan", f"후보 {len(analyzed)}개 분석 완료")
+        n_long = sum(1 for c in analyzed if c.outlook == "long")
+        n_short = sum(1 for c in analyzed if c.outlook == "short")
+        side_mode = self.config.position_side.value
+        self._log(
+            "scan",
+            f"후보 {len(analyzed)} (판단 롱 {n_long} / 숏 {n_short}) · 진입모드={side_mode}",
+        )
 
         if self.config.auto_invest:
             await self._auto_enter(analyzed)
@@ -170,25 +246,77 @@ class TradingEngine:
             if exit_flag:
                 await self._close_position(inst_id, reason)
 
+    def _resolve_entry_side(self, cand: CoinCandidate) -> PositionSide | None:
+        mode = self.config.position_side
+        if mode == PositionSideMode.LONG:
+            if cand.outlook == "short":
+                return None
+            return PositionSide.LONG
+        if mode == PositionSideMode.SHORT:
+            if self.config.instrument_type == InstrumentType.SPOT:
+                return None
+            if not self.config.allow_short:
+                return None
+            if cand.outlook == "short" or cand.short_scalp_ok or cand.short_swing_ok:
+                return PositionSide.SHORT
+            return None
+
+        # AUTO: 숏 신호 우선 (하락·과열), 그다음 롱
+        if self.config.allow_short and self.config.instrument_type != InstrumentType.SPOT:
+            if cand.outlook == "short":
+                return PositionSide.SHORT
+            if cand.short_scalp_ok or cand.short_swing_ok:
+                return PositionSide.SHORT
+            if cand.trend == "down" and cand.rsi >= 52 and cand.change_24h_pct < -2:
+                return PositionSide.SHORT
+            if cand.rsi >= 65 and cand.trend in ("down", "sideways"):
+                return PositionSide.SHORT
+
+        if cand.outlook == "long" or cand.scalp_ok or cand.swing_ok:
+            return PositionSide.LONG
+        if cand.score >= self.config.min_score and cand.trend in ("strong_up", "up"):
+            return PositionSide.LONG
+        return None
+
     async def _auto_enter(self, candidates: list[CoinCandidate]) -> None:
         snap = self.portfolio.snapshot()
         for cand in candidates:
-            ok, msg = check_entry_allowed(self.config, snap, cand)
-            if not ok:
+            if any(p.inst_id == cand.inst_id for p in snap.positions):
                 continue
 
-            side = PositionSide.LONG
-            if cand.outlook == "short" and self.config.allow_short:
-                side = PositionSide.SHORT
-            elif cand.outlook != "long":
+            side = self._resolve_entry_side(cand)
+            if side is None:
                 continue
 
-            reason = f"AI {self.config.strategy_mode.value} | score={cand.score} | {', '.join(cand.reasons[:3])}"
-            success = await self._open_position(cand.inst_id, side, cand.last_price, reason, cand.score)
-            if success:
-                snap = self.portfolio.snapshot()
-                if len(snap.positions) >= self.config.max_positions:
+            entered = False
+            for strat in active_strategies(self.config):
+                ok, msg = check_entry_allowed(
+                    self.config, snap, cand, strat, entry_side=side
+                )
+                if not ok:
+                    continue
+
+                label = "단타" if strat == StrategyMode.SCALP else "장타"
+                dir_label = "숏" if side == PositionSide.SHORT else "롱"
+                reason = (
+                    f"AI {label} {dir_label} | score={cand.score} | "
+                    f"{', '.join(cand.reasons[:3])}"
+                )
+                success = await self._open_position(
+                    cand.inst_id,
+                    side,
+                    cand.last_price,
+                    reason,
+                    cand.score,
+                    strategy_mode=strat,
+                )
+                if success:
+                    entered = True
+                    snap = self.portfolio.snapshot()
                     break
+
+            if entered and len(snap.positions) >= self.config.max_positions:
+                break
 
     async def _open_position(
         self,
@@ -197,30 +325,86 @@ class TradingEngine:
         price: float,
         reason: str,
         score: float = 0.0,
+        strategy_mode: StrategyMode | None = None,
     ) -> bool:
-        size_usdt = self.config.order_size_usdt
+        snap = self.portfolio.snapshot()
+        size_usdt = resolve_order_size_usdt(
+            self.config,
+            snap,
+            open_positions=len(snap.positions),
+        )
         if price <= 0:
             return False
 
         if self._is_live() and self._has_keys():
+            await self._sync_live_if_needed()
+            snap = self.portfolio.snapshot()
+            size_usdt = resolve_order_size_usdt(
+                self.config,
+                snap,
+                open_positions=len(snap.positions),
+            )
+            if self.portfolio.available < size_usdt:
+                self._log(
+                    "entry",
+                    f"진입 실패 (가용 ${self.portfolio.available:.2f} < 주문 ${size_usdt:.2f}): {inst_id}",
+                    "warn",
+                )
+                return False
             ok, msg, fill_price = await live_open(self.config, inst_id, side, size_usdt)
             if not ok:
                 self._log("order", f"실거래 진입 실패: {msg}", "warn")
                 return False
             price = fill_price
+            await self._sync_live_if_needed()
             self._log("order", f"실거래 진입: {inst_id} {side.value} @ {price}", "ok")
+            self._log("entry", f"진입 {inst_id} {side.value} (OKX 동기화)", "ok")
+            return True
 
-        quantity = size_usdt / price
-        if self.config.instrument_type.value != "spot":
-            quantity = max(1, math.floor(size_usdt / (price * 0.01)))
+        if self.config.instrument_type == InstrumentType.SPOT:
+            quantity = size_usdt / price
+            notional = size_usdt
+        else:
+            quantity = swap_contract_count(size_usdt, price)
+            notional = swap_notional_usdt(quantity, price)
+
+        strat = strategy_mode or self.config.strategy_mode
+        if strat == StrategyMode.BOTH:
+            strat = StrategyMode.SCALP
+        plan = await compute_dynamic_sl_tp(inst_id, price, side, strat, self.config)
+        full_reason = f"{reason} | SL {plan.sl_pct}% TP {plan.tp_pct}% ({plan.method})"
 
         pos = self.portfolio.open_position(
-            inst_id, side, quantity, price, self.config, reason, score
+            inst_id,
+            side,
+            quantity,
+            price,
+            self.config,
+            full_reason,
+            score,
+            strategy_mode=strat,
+            stop_loss=plan.stop_loss,
+            take_profit=plan.take_profit,
+            sl_pct=plan.sl_pct,
+            tp_pct=plan.tp_pct,
+            sl_tp_note=plan.method,
+            notional_usdt=notional,
         )
         if pos:
-            self._log("entry", f"진입 {inst_id} {side.value} qty={quantity:.4f} @ {price:.2f}", "ok")
+            self._log(
+                "entry",
+                f"진입 {inst_id} {side.value} @ {price:.6g} | "
+                f"명목 ${notional:,.0f} | SL {plan.sl_pct}% TP {plan.tp_pct}%",
+                "ok",
+            )
             return True
-        self._log("entry", f"진입 실패 (잔고 부족): {inst_id}", "warn")
+        lev = max(1, self.config.leverage)
+        margin = swap_margin_usdt(notional, lev) if self.config.instrument_type != InstrumentType.SPOT else notional
+        self._log(
+            "entry",
+            f"진입 실패 (가용 ${self.portfolio.available:,.0f} < 마진 ${margin:,.0f}): {inst_id}",
+            "warn",
+        )
         return False
 
     async def _close_position(self, inst_id: str, reason: str) -> bool:
@@ -235,6 +419,9 @@ class TradingEngine:
                 self._log("order", f"실거래 청산 실패: {msg}", "warn")
                 return False
             self._log("order", f"실거래 청산: {inst_id} — {reason}", "ok")
+            await self._sync_live_if_needed()
+            self._log("exit", f"청산 {inst_id} (OKX 동기화) — {reason}", "ok")
+            return True
 
         trade = self.portfolio.close_position(inst_id, price, reason)
         if trade:
@@ -266,6 +453,72 @@ class TradingEngine:
         ok = await self._close_position(inst_id, "수동 청산")
         self._notify()
         return (True, "청산 완료") if ok else (False, "청산 실패")
+
+    async def set_position_sl_tp(
+        self,
+        inst_id: str,
+        sl_pct: float,
+        tp_pct: float,
+    ) -> tuple[bool, str]:
+        self.bind_portfolio()
+        ok, msg = self.portfolio.set_sl_tp_manual(inst_id, sl_pct, tp_pct)
+        if ok:
+            pos = self.portfolio.positions.get(inst_id)
+            side = pos.side.value if pos else ""
+            self._log(
+                "config",
+                f"[수동 SL/TP] {inst_id} {side} — 손절 {sl_pct}% / 익절 {tp_pct}% (가격 도달 시 자동 청산)",
+                "ok",
+            )
+            self._notify()
+        return ok, msg
+
+    async def reset_position_sl_tp_auto(self, inst_id: str) -> tuple[bool, str]:
+        self.bind_portfolio()
+        if not self.portfolio.clear_sl_tp_manual(inst_id):
+            return False, "포지션 없음"
+        pos = self.portfolio.positions.get(inst_id)
+        if not pos or pos.entry_price <= 0:
+            return False, "포지션 없음"
+        strat = pos.strategy_mode
+        if strat == StrategyMode.BOTH:
+            strat = StrategyMode.SCALP
+        try:
+            plan = await compute_dynamic_sl_tp(
+                inst_id, pos.entry_price, pos.side, strat, self.config
+            )
+            self.portfolio.apply_sl_tp_plan(inst_id, plan)
+        except Exception as e:
+            return False, f"자동 SL/TP 갱신 실패: {e}"
+        self._log("config", f"[자동 SL/TP] {inst_id} — 차트 기준으로 복귀", "ok")
+        self._notify()
+        return True, "자동 SL/TP로 복귀"
+
+    async def reset_paper_portfolio(self, initial_balance: float | None = None) -> float:
+        bal = initial_balance if initial_balance is not None else self.config.paper_initial_balance
+        if bal < 100:
+            bal = 100.0
+        old_cfg = self.config.model_copy(deep=True)
+        self.config.paper_initial_balance = bal
+        bal_changes = format_config_changes(old_cfg, self.config)
+        if bal_changes:
+            self._log("config", "[모의투자 초기화] " + " | ".join(bal_changes))
+
+        if self.bot.status.running:
+            await self.stop_bot()
+
+        prev_portfolio = self.portfolio
+        self.portfolio = store.paper
+        for inst_id in list(store.paper.positions.keys()):
+            await self._close_position(inst_id, "초기화 청산")
+        self.portfolio = prev_portfolio
+
+        store.paper.reset(bal)
+        self.bind_portfolio()
+        self.candidates = []
+        self._log("reset", f"모의투자 초기화 (${bal:,.0f})", "ok")
+        self._notify()
+        return bal
 
     async def close_all(self) -> int:
         count = 0

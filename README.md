@@ -37,12 +37,31 @@ OKX API 키 발급: https://www.okx.com/account/my-api
 
 ### 3. 실행
 
+| 파일 | 설명 |
+|------|------|
+| `run.bat` | 서버 실행 (콘솔만) |
+| `run-with-log.bat` | 서버 실행 + `logs/`에 로그 저장 |
+| `restart-server.bat` | 기존 서버 종료 후 로그 모드로 재시작 |
+| `stop-server.bat` | `.env`의 `OAT_PORT` 리스닝 프로세스 종료 |
+
 ```bash
 chmod +x run.sh
 ./run.sh
 ```
 
 브라우저: **http://127.0.0.1:8080** (포트 변경: `.env`의 `OAT_PORT`)
+
+로그 파일 (`run-with-log.bat` / `restart-server.bat`):
+- `logs/oat-latest.log` — 최근 실행
+- `logs/oat_YYYY-MM-DD.log` — 일별 누적
+- `logs/oat_YYYY-MM-DD_HH-mm-ss.log` — 실행 세션별
+
+**외부/LAN 접속** (`.env`):
+```env
+OAT_BIND_EXTERNAL=1
+OAT_HOST=0.0.0.0
+```
+`run.bat` 실행 시 Windows 방화벽에 포트를 열려고 시도합니다(관리자 권한이면 자동). 다른 기기: `http://<이 PC IP>:8080` — **로그인 없음**, 공유기/인터넷에 노출 시 주의.
 
 ### 4. 개발 모드
 

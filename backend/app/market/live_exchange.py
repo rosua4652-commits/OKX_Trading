@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
-import math
 
+from app.contract_sizing import swap_contract_count
 from app.market.okx_client import get_okx_client
 from app.models import AppConfig, InstrumentType, PositionSide
 
@@ -15,14 +15,6 @@ def _td_mode(instrument: InstrumentType) -> str:
     if instrument == InstrumentType.SPOT:
         return "cash"
     return "cross"
-
-
-def _calc_contract_size(size_usdt: float, price: float, ct_val: float = 0.01) -> str:
-    if price <= 0:
-        return "1"
-    contracts = size_usdt / (price * ct_val)
-    contracts = max(1, math.floor(contracts))
-    return str(contracts)
 
 
 async def live_open(
@@ -60,7 +52,7 @@ async def live_open(
             order_side = "sell"
         pos_side = ""
     else:
-        sz = _calc_contract_size(size_usdt, price)
+        sz = str(int(swap_contract_count(size_usdt, price)))
         order_side = "buy" if side == PositionSide.LONG else "sell"
         pos_side = side.value
 
@@ -92,7 +84,11 @@ async def live_close(
         return False, "API 키 없음"
 
     td_mode = _td_mode(config.instrument_type)
-    sz = str(max(1, math.floor(quantity))) if config.instrument_type != InstrumentType.SPOT else str(round(quantity, 6))
+    sz = (
+        str(max(1, int(quantity)))
+        if config.instrument_type != InstrumentType.SPOT
+        else str(round(quantity, 6))
+    )
     result = client.close_position(inst_id, side.value, sz, td_mode)
     if result:
         return True, f"청산 성공 ordId={result.get('ordId', '')}"

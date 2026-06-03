@@ -7,11 +7,19 @@ export async function fetchStatus(): Promise<StatusData> {
   return res.json();
 }
 
-export async function startBot(autoInvest = true, strategy?: string) {
+export async function startBot(
+  autoInvest = true,
+  strategy?: string,
+  positionSide = "auto",
+) {
   const res = await fetch(`${BASE}/api/bot/start`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ auto_invest: autoInvest, strategy_mode: strategy }),
+    body: JSON.stringify({
+      auto_invest: autoInvest,
+      strategy_mode: strategy,
+      position_side: positionSide,
+    }),
   });
   return res.json();
 }
@@ -26,11 +34,37 @@ export async function scanNow() {
   return res.json();
 }
 
-export async function updateConfig(config: AppConfig) {
+export async function updateConfig(
+  config: AppConfig,
+): Promise<{ ok: boolean; message?: string; api_keys_configured?: boolean }> {
   const res = await fetch(`${BASE}/api/config`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ config }),
+  });
+  return res.json();
+}
+
+export async function setPositionSlTp(
+  instId: string,
+  slPct: number,
+  tpPct: number,
+): Promise<{ ok: boolean; message?: string }> {
+  const res = await fetch(`${BASE}/api/position/sl-tp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ inst_id: instId, sl_pct: slPct, tp_pct: tpPct }),
+  });
+  return res.json();
+}
+
+export async function resetPositionSlTpAuto(
+  instId: string,
+): Promise<{ ok: boolean; message?: string }> {
+  const res = await fetch(`${BASE}/api/position/sl-tp/auto`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ inst_id: instId }),
   });
   return res.json();
 }
@@ -47,6 +81,33 @@ export async function closePosition(instId: string) {
 export async function closeAll() {
   const res = await fetch(`${BASE}/api/order/close-all`, { method: "POST" });
   return res.json();
+}
+
+export async function fetchCandles(instId: string, strategy: string, side = "long") {
+  const q = new URLSearchParams({ inst_id: instId, strategy, side });
+  const res = await fetch(`${BASE}/api/candles?${q}`);
+  return res.json() as Promise<{
+    candles: { time: number; open: number; high: number; low: number; close: number; volume?: number }[];
+    sl_pct: number;
+    tp_pct: number;
+    sl_tp_method?: string;
+  }>;
+}
+
+export async function resetPaper(initialBalance?: number) {
+  const res = await fetch(`${BASE}/api/paper/reset`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      initial_balance: initialBalance,
+    }),
+  });
+  return res.json() as Promise<{
+    ok: boolean;
+    message: string;
+    balance?: number;
+    equity?: number;
+  }>;
 }
 
 export async function testConnection() {
@@ -68,6 +129,34 @@ export async function setStrategy(strategy: string) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ strategy }),
+  });
+  return res.json();
+}
+
+export async function setPositionSide(mode: string) {
+  const res = await fetch(`${BASE}/api/position-side`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode }),
+  });
+  return res.json();
+}
+
+export async function manualOrder(
+  instId: string,
+  side: "long" | "short",
+  sizeUsdt: number,
+  leverage: number,
+) {
+  const res = await fetch(`${BASE}/api/order/manual`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      inst_id: instId,
+      side,
+      size_usdt: sizeUsdt,
+      leverage,
+    }),
   });
   return res.json();
 }

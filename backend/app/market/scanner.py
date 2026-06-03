@@ -38,16 +38,23 @@ async def scan_market(
     min_volume: float | None = None,
 ) -> list[CoinCandidate]:
     tickers = await market.tickers(instrument)
-    min_vol = min_volume or (
-        settings.scalp_min_quote_volume_usdt
-        if strategy == StrategyMode.SCALP
-        else settings.min_quote_volume_usdt
-    )
-    min_change = (
-        settings.scalp_min_abs_change_24h_pct
-        if strategy == StrategyMode.SCALP
-        else 0.5
-    )
+    if strategy == StrategyMode.BOTH:
+        min_vol = min_volume or min(
+            settings.scalp_min_quote_volume_usdt,
+            settings.min_quote_volume_usdt,
+        )
+        min_change = min(settings.scalp_min_abs_change_24h_pct, 0.5)
+    else:
+        min_vol = min_volume or (
+            settings.scalp_min_quote_volume_usdt
+            if strategy == StrategyMode.SCALP
+            else settings.min_quote_volume_usdt
+        )
+        min_change = (
+            settings.scalp_min_abs_change_24h_pct
+            if strategy == StrategyMode.SCALP
+            else 0.5
+        )
 
     candidates: list[CoinCandidate] = []
     for t in tickers:

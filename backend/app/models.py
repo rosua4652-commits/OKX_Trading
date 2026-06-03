@@ -24,6 +24,13 @@ class InstrumentType(str, Enum):
 class StrategyMode(str, Enum):
     SCALP = "scalp"
     SWING = "swing"
+    BOTH = "both"
+
+
+class PositionSideMode(str, Enum):
+    AUTO = "auto"
+    LONG = "long"
+    SHORT = "short"
 
 
 class PositionSide(str, Enum):
@@ -38,13 +45,20 @@ class AppConfig(BaseModel):
     auto_invest: bool = False
     max_positions: int = 5
     order_size_usdt: float = 50.0
+    position_size_mode: str = "fixed"
+    order_size_pct: float = 2.0
+    max_order_size_usdt: float = 0.0
+    min_order_size_usdt: float = 10.0
+    size_split_slots: bool = False
     leverage: int = 3
     stop_loss_pct: float = 2.0
     take_profit_pct: float = 3.0
     trailing_stop: bool = True
     allow_short: bool = True
+    position_side: PositionSideMode = PositionSideMode.AUTO
     scan_symbols: list[str] = Field(default_factory=lambda: ["BTC-USDT-SWAP", "ETH-USDT-SWAP"])
     min_score: float = 55.0
+    paper_initial_balance: float = 10_000.0
     okx_api_key: str = ""
     okx_api_secret: str = ""
     okx_passphrase: str = ""
@@ -60,12 +74,18 @@ class Position(BaseModel):
     current_price: float = 0.0
     stop_loss: float = 0.0
     take_profit: float = 0.0
+    sl_pct: float = 0.0
+    tp_pct: float = 0.0
+    sl_tp_note: str = ""
+    sl_tp_manual: bool = False
     trailing_high: float = 0.0
     strategy_mode: StrategyMode = StrategyMode.SCALP
     instrument_type: InstrumentType = InstrumentType.SWAP
     entry_reason: str = ""
     entry_score: float = 0.0
     opened_at: str = ""
+    leverage: int = 0
+    notional_usdt: float = 0.0
     unrealized_pnl: float = 0.0
     unrealized_pnl_pct: float = 0.0
 
@@ -79,6 +99,11 @@ class TradeRecord(BaseModel):
     pnl: float = 0.0
     pnl_pct: float = 0.0
     reason: str = ""
+    close_type: str = ""
+    position_side: str = ""
+    entry_price: float = 0.0
+    notional_usdt: float = 0.0
+    strategy_mode: str = ""
     mode: TradeMode = TradeMode.PAPER
     ts: str = ""
 
@@ -91,10 +116,14 @@ class CoinCandidate(BaseModel):
     score: float = 0.0
     scalp_ok: bool = False
     swing_ok: bool = False
+    short_scalp_ok: bool = False
+    short_swing_ok: bool = False
     outlook: str = ""
     reasons: list[str] = Field(default_factory=list)
     rsi: float = 50.0
     trend: str = ""
+    sparkline: list[float] = Field(default_factory=list)
+    ohlc_bars: list[dict[str, float]] = Field(default_factory=list)
 
 
 class BotStatus(BaseModel):
@@ -134,6 +163,7 @@ class StatusResponse(BaseModel):
 class BotStartRequest(BaseModel):
     auto_invest: Optional[bool] = None
     strategy_mode: Optional[StrategyMode] = None
+    position_side: Optional[PositionSideMode] = None
 
 
 class ManualOrderRequest(BaseModel):

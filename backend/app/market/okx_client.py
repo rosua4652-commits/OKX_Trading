@@ -206,15 +206,42 @@ class OKXClient:
             pos_side=pos_side,
         )
 
+    def _balance_check(self) -> tuple[bool, str]:
+        if not self._account:
+            return False, "계정 API 초기화 실패"
+        result = self._account.get_account_balance()
+        if self._ok(result):
+            env = "데모" if self.flag == "1" else "실거래"
+            return True, f"OKX 연결 성공 ({env})"
+        return False, str(result.get("msg", "unknown"))
+
     def test_connection(self) -> tuple[bool, str]:
         if not self.has_credentials:
             return False, "API 키가 설정되지 않았습니다"
         self._ensure_imports()
         try:
-            result = self._account.get_account_balance()
-            if self._ok(result):
-                return True, "OKX 연결 성공"
-            return False, f"연결 실패: {result.get('msg', 'unknown')}"
+            ok, msg = self._balance_check()
+            if ok:
+                return True, msg
+            lower = msg.lower()
+            if "environment" not in lower and "does not match" not in lower:
+                return False, f"연결 실패: {msg}"
+
+            alt_flag = "0" if self.flag == "1" else "1"
+            alt = OKXClient(
+                self.api_key, self.api_secret, self.passphrase, alt_flag
+            )
+            alt._ensure_imports()
+            ok2, msg2 = alt._balance_check()
+            if ok2:
+                env = "데모" if alt_flag == "1" else "실거래"
+                return True, f"{msg2}|AUTO_FLAG:{alt_flag}|환경 자동 맞춤 ({env})"
+
+            return (
+                False,
+                "API 키 환경 불일치: OKX에서 데모(시뮬레이션) 키면 설정→데모 모드, "
+                "실거래 키면 설정→실거래 모드로 맞추세요.",
+            )
         except Exception as e:
             return False, f"연결 오류: {e}"
 
