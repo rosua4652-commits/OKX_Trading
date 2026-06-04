@@ -645,7 +645,7 @@ def optimize_strategy(
         and short_best.win_rate >= long_best.win_rate + 8
     ):
         dir_reason += (
-            f" | 정방향 승률 {normal_best.win_rate}% 낮음 → 역방향 {inverse_best.win_rate}% 우세"
+            f" | 롱 승률 {long_best.win_rate}% 낮음 -> 숏/반전 {short_best.win_rate}% 우세"
         )
 
     rec_sl, rec_tp, sl_tp_trials, sl_tp_reason = optimize_sl_tp(

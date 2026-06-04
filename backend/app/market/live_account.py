@@ -42,6 +42,13 @@ def _parse_usd_balance(rows: list) -> tuple[float, float]:
     return round(equity, 2), round(avail, 2)
 
 
+def _abs_float(value) -> float:
+    try:
+        return abs(float(value or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _resolve_strategy(strategy: StrategyMode | str) -> StrategyMode:
     if isinstance(strategy, StrategyMode):
         s = strategy
@@ -78,14 +85,19 @@ def _okx_to_position(raw: dict, config: AppConfig, existing: Optional[Position])
         return None
 
     try:
-        size = abs(float(raw.get("pos") or 0))
+        raw_size = float(raw.get("pos") or 0)
     except (TypeError, ValueError):
-        size = 0.0
+        raw_size = 0.0
+    size = abs(raw_size)
     if size <= 0:
         return None
 
-    pos_side = (raw.get("posSide") or "long").lower()
-    side = PositionSide.SHORT if pos_side == "short" else PositionSide.LONG
+    pos_side = (raw.get("posSide") or "").lower()
+    side = (
+        PositionSide.SHORT
+        if pos_side == "short" or raw_size < 0
+        else PositionSide.LONG
+    )
 
     entry = float(raw.get("avgPx") or raw.get("nonSettleAvgPx") or 0)
     mark = float(raw.get("markPx") or raw.get("last") or entry)
@@ -130,7 +142,13 @@ def _okx_to_position(raw: dict, config: AppConfig, existing: Optional[Position])
         sl_p = manual_sl_pct or sl_p
         tp_p = manual_tp_pct or tp_p
 
-    cost = entry * size if entry > 0 else 0
+    notional_usdt = _abs_float(
+        raw.get("notionalUsd")
+        or raw.get("notionalUsdForBorrow")
+        or raw.get("notionalUsdForSwap")
+        or 0
+    )
+    cost = notional_usdt if notional_usdt > 0 else (entry * size if entry > 0 else 0)
     if upl_ratio == 0 and cost > 0:
         upl_ratio = upl / cost * 100
 
@@ -155,6 +173,7 @@ def _okx_to_position(raw: dict, config: AppConfig, existing: Optional[Position])
         entry_score=score,
         opened_at=opened,
         leverage=lever,
+        notional_usdt=round(notional_usdt, 2),
         unrealized_pnl=round(upl, 4),
         unrealized_pnl_pct=round(upl_ratio, 2),
     )

@@ -1,4 +1,4 @@
-"""Core trading engine — scan, analyze, enter, exit."""
+﻿"""Core trading engine ??scan, analyze, enter, exit."""
 
 from __future__ import annotations
 
@@ -101,14 +101,14 @@ class TradingEngine:
                 )
                 self.portfolio.apply_sl_tp_plan(inst_id, plan)
             except Exception as e:
-                self._log("sync", f"SL/TP 갱신 실패 {inst_id}: {e}", "warn")
+                self._log("sync", f"SL/TP 媛깆떊 ?ㅽ뙣 {inst_id}: {e}", "warn")
 
     async def _sync_live_if_needed(self) -> None:
         if not self._is_live():
             self._portfolio_sync_message = ""
             return
         if not self._has_keys():
-            self._portfolio_sync_message = "실거래: API 키를 설정·저장하세요"
+            self._portfolio_sync_message = "?ㅺ굅?? API ?ㅻ? ?ㅼ젙쨌??ν븯?몄슂"
             return
         ok, msg = sync_live_portfolio(self.portfolio, self.config)
         self._portfolio_sync_message = msg
@@ -129,8 +129,8 @@ class TradingEngine:
             self.portfolio.update_prices(prices)
         snap = self.portfolio.snapshot()
         linked = False
-        if self._has_keys() and self._link_message and "실패" not in self._link_message and "오류" not in self._link_message:
-            linked = "연결" in self._link_message or self._link_message.lower().startswith("ok")
+        if self._has_keys() and self._link_message and "?ㅽ뙣" not in self._link_message and "?ㅻ쪟" not in self._link_message:
+            linked = "?곌껐" in self._link_message or self._link_message.lower().startswith("ok")
         out: dict = {
             "config": config_for_client(self.config),
             "bot": self.bot.model_dump(),
@@ -194,17 +194,17 @@ class TradingEngine:
         if self.bot.status.running:
             return
         self.bot.status.running = True
-        self.bot.status.message = "봇 시작"
+        self.bot.status.message = "遊??쒖옉"
         strat_label = self.config.strategy_mode.value
         if self.config.strategy_mode == StrategyMode.BOTH:
-            strat_label = "단타+장타"
-        self._log("start", f"자동매매 시작 ({strat_label}, {self.config.instrument_type.value})")
+            strat_label = "?⑦?+?ν?"
+        self._log("start", f"?먮룞留ㅻℓ ?쒖옉 ({strat_label}, {self.config.instrument_type.value})")
         self._task = asyncio.create_task(self._run_loop())
         self._notify()
 
     async def stop_bot(self) -> None:
         self.bot.status.running = False
-        self.bot.status.message = "봇 중지"
+        self.bot.status.message = "遊?以묒?"
         if self._task:
             self._task.cancel()
             try:
@@ -212,7 +212,7 @@ class TradingEngine:
             except asyncio.CancelledError:
                 pass
             self._task = None
-        self._log("stop", "자동매매 중지")
+        self._log("stop", "?먮룞留ㅻℓ 以묒?")
         self._notify()
 
     async def _run_loop(self) -> None:
@@ -220,7 +220,7 @@ class TradingEngine:
             try:
                 await self._tick()
             except Exception as e:
-                self._log("error", f"틱 오류: {e}", "warn")
+                self._log("error", f"???ㅻ쪟: {e}", "warn")
             await asyncio.sleep(settings.scan_interval_sec)
 
     async def _tick(self) -> None:
@@ -229,7 +229,7 @@ class TradingEngine:
             await self._sync_live_if_needed()
         self.bot.status.scan_count += 1
         self.bot.status.last_scan = utc_now_iso()
-        self._log("scan", f"시장 스캔 #{self.bot.status.scan_count}")
+        self._log("scan", f"?쒖옣 ?ㅼ틪 #{self.bot.status.scan_count}")
 
         await self._check_exits()
 
@@ -252,7 +252,7 @@ class TradingEngine:
         side_mode = self.config.position_side.value
         self._log(
             "scan",
-            f"후보 {len(analyzed)} (판단 롱 {n_long} / 숏 {n_short}) · 진입모드={side_mode}",
+            f"?꾨낫 {len(analyzed)} (?먮떒 濡?{n_long} / ??{n_short}) 쨌 吏꾩엯紐⑤뱶={side_mode}",
         )
 
         if self.config.auto_invest:
@@ -293,8 +293,8 @@ class TradingEngine:
                 if not ok:
                     continue
 
-                label = "단타" if strat == StrategyMode.SCALP else "장타"
-                dir_label = "숏" if side == PositionSide.SHORT else "롱"
+                label = "?⑦?" if strat == StrategyMode.SCALP else "?ν?"
+                dir_label = "?? if side == PositionSide.SHORT else "濡?
                 reason = (
                     f"AI {label} {dir_label} | score={cand.score} | "
                     f"{', '.join(cand.reasons[:3])}"
@@ -351,12 +351,12 @@ class TradingEngine:
                 return False
             ok, msg, fill_price = await live_open(self.config, inst_id, side, size_usdt)
             if not ok:
-                self._log("order", f"실거래 진입 실패: {msg}", "warn")
+                self._log("order", f"?ㅺ굅??吏꾩엯 ?ㅽ뙣: {msg}", "warn")
                 return False
             price = fill_price
             await self._sync_live_if_needed()
-            self._log("order", f"실거래 진입: {inst_id} {side.value} @ {price}", "ok")
-            self._log("entry", f"진입 {inst_id} {side.value} (OKX 동기화)", "ok")
+            self._log("order", f"?ㅺ굅??吏꾩엯: {inst_id} {side.value} @ {price}", "ok")
+            self._log("entry", f"吏꾩엯 {inst_id} {side.value} (OKX ?숆린??", "ok")
             return True
 
         if self.config.instrument_type == InstrumentType.SPOT:
@@ -398,8 +398,8 @@ class TradingEngine:
         if pos:
             self._log(
                 "entry",
-                f"진입 {inst_id} {side.value} @ {price:.6g} | "
-                f"명목 ${notional:,.0f} | SL {plan.sl_pct}% TP {plan.tp_pct}%",
+                f"吏꾩엯 {inst_id} {side.value} @ {price:.6g} | "
+                f"紐낅ぉ ${notional:,.0f} | SL {plan.sl_pct}% TP {plan.tp_pct}%",
                 "ok",
             )
             return True
@@ -423,18 +423,26 @@ class TradingEngine:
         if self._is_live() and self._has_keys():
             ok, msg = await live_close(self.config, inst_id, pos.side, pos.quantity)
             if not ok:
-                self._log("order", f"실거래 청산 실패: {msg}", "warn")
+                self._log("order", f"live close failed: {msg}", "warn")
                 return False
-            self._log("order", f"실거래 청산: {inst_id} — {reason}", "ok")
+            self._log("order", f"live close accepted: {inst_id} - {reason}", "ok")
+            trade = self.portfolio.close_position(inst_id, price, reason)
             await self._sync_live_if_needed()
-            self._log("exit", f"청산 {inst_id} (OKX 동기화) — {reason}", "ok")
+            if trade:
+                self._log(
+                    "exit",
+                    f"close {inst_id} PnL={trade.pnl:+.2f} ({trade.pnl_pct:+.1f}%) - {reason}",
+                    "ok" if trade.pnl >= 0 else "warn",
+                )
+            else:
+                self._log("exit", f"close {inst_id} synced from OKX - {reason}", "ok")
             return True
 
         trade = self.portfolio.close_position(inst_id, price, reason)
         if trade:
             self._log(
                 "exit",
-                f"청산 {inst_id} PnL={trade.pnl:+.2f} ({trade.pnl_pct:+.1f}%) — {reason}",
+                f"close {inst_id} PnL={trade.pnl:+.2f} ({trade.pnl_pct:+.1f}%) - {reason}",
                 "ok" if trade.pnl >= 0 else "warn",
             )
             return True
@@ -444,22 +452,22 @@ class TradingEngine:
         side = req.side
         ticker = await market.ticker(req.inst_id)
         if not ticker:
-            return False, "시세 없음"
+            return False, "?쒖꽭 ?놁쓬"
         price = float(ticker.get("last", 0))
         old_size = self.config.order_size_usdt
         old_lev = self.config.leverage
         self.config.order_size_usdt = req.size_usdt
         self.config.leverage = req.leverage
-        ok = await self._open_position(req.inst_id, side, price, "수동 주문")
+        ok = await self._open_position(req.inst_id, side, price, "?섎룞 二쇰Ц")
         self.config.order_size_usdt = old_size
         self.config.leverage = old_lev
         self._notify()
-        return (True, "주문 완료") if ok else (False, "주문 실패")
+        return (True, "二쇰Ц ?꾨즺") if ok else (False, "二쇰Ц ?ㅽ뙣")
 
     async def manual_close(self, inst_id: str) -> tuple[bool, str]:
-        ok = await self._close_position(inst_id, "수동 청산")
+        ok = await self._close_position(inst_id, "?섎룞 泥?궛")
         self._notify()
-        return (True, "청산 완료") if ok else (False, "청산 실패")
+        return (True, "泥?궛 ?꾨즺") if ok else (False, "泥?궛 ?ㅽ뙣")
 
     async def set_position_sl_tp(
         self,
@@ -474,7 +482,7 @@ class TradingEngine:
             side = pos.side.value if pos else ""
             self._log(
                 "config",
-                f"[수동 SL/TP] {inst_id} {side} — 손절 {sl_pct}% / 익절 {tp_pct}% (가격 도달 시 자동 청산)",
+                f"[?섎룞 SL/TP] {inst_id} {side} ???먯젅 {sl_pct}% / ?듭젅 {tp_pct}% (媛寃??꾨떖 ???먮룞 泥?궛)",
                 "ok",
             )
             self._notify()
@@ -499,10 +507,10 @@ class TradingEngine:
     async def reset_position_sl_tp_auto(self, inst_id: str) -> tuple[bool, str]:
         self.bind_portfolio()
         if not self.portfolio.clear_sl_tp_manual(inst_id):
-            return False, "포지션 없음"
+            return False, "?ъ????놁쓬"
         pos = self.portfolio.positions.get(inst_id)
         if not pos or pos.entry_price <= 0:
-            return False, "포지션 없음"
+            return False, "?ъ????놁쓬"
         pos.auto_sl_tp_disabled = False
         strat = pos.strategy_mode
         if strat == StrategyMode.BOTH:
@@ -513,10 +521,10 @@ class TradingEngine:
             )
             self.portfolio.apply_sl_tp_plan(inst_id, plan)
         except Exception as e:
-            return False, f"자동 SL/TP 갱신 실패: {e}"
-        self._log("config", f"[자동 SL/TP] {inst_id} — 차트 기준으로 복귀", "ok")
+            return False, f"?먮룞 SL/TP 媛깆떊 ?ㅽ뙣: {e}"
+        self._log("config", f"[?먮룞 SL/TP] {inst_id} ??李⑦듃 湲곗??쇰줈 蹂듦?", "ok")
         self._notify()
-        return True, "자동 SL/TP로 복귀"
+        return True, "?먮룞 SL/TP濡?蹂듦?"
 
     async def reset_paper_portfolio(self, initial_balance: float | None = None) -> float:
         bal = initial_balance if initial_balance is not None else self.config.paper_initial_balance
@@ -540,14 +548,14 @@ class TradingEngine:
         store.paper.reset(bal)
         self.bind_portfolio()
         self.candidates = []
-        self._log("reset", f"모의투자 초기화 (${bal:,.0f})", "ok")
+        self._log("reset", f"紐⑥쓽?ъ옄 珥덇린??(${bal:,.0f})", "ok")
         self._notify()
         return bal
 
     async def close_all(self) -> int:
         count = 0
         for inst_id in list(self.portfolio.positions.keys()):
-            if await self._close_position(inst_id, "전량 청산"):
+            if await self._close_position(inst_id, "?꾨웾 泥?궛"):
                 count += 1
         self._notify()
         return count

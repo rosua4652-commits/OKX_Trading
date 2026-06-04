@@ -1,4 +1,4 @@
-"""SWAP contract count and notional (shared by paper and live)."""
+﻿"""SWAP contract count and notional (shared by paper and live)."""
 
 from __future__ import annotations
 
@@ -41,14 +41,15 @@ def swap_margin_usdt(notional: float, leverage: int) -> float:
 
 def classify_close_type(reason: str) -> str:
     r = reason or ""
-    if "손절" in r:
+    rl = r.lower()
+    if "손절" in r or "stop" in rl or "sl" in rl:
         return "sl"
-    if "익절" in r:
+    if "익절" in r or "take" in rl or "tp" in rl:
         return "tp"
-    if "트레일" in r or "trailing" in r.lower():
+    if "트레일" in r or "trailing" in rl:
         return "trail"
-    if "긴급" in r:
+    if "긴급" in r or "emergency" in rl:
         return "emergency"
-    if "수동" in r or "manual" in r.lower():
+    if "수동" in r or "manual" in rl:
         return "manual"
     return "other"

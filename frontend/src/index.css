@@ -520,6 +520,98 @@ th { color: #8b949e; font-weight: 500; }
   margin-bottom: 16px;
 }
 
+@media (max-width: 700px) {
+  body {
+    overflow-x: hidden;
+  }
+
+  .app {
+    width: 100%;
+    max-width: 100%;
+    padding: 10px;
+    overflow-x: hidden;
+  }
+
+  header {
+    align-items: flex-start;
+    gap: 8px;
+    flex-direction: column;
+    margin-bottom: 14px;
+  }
+
+  header h1 {
+    font-size: 1.15rem;
+  }
+
+  .app-tabs {
+    gap: 6px;
+    overflow-x: auto;
+    padding-bottom: 10px;
+  }
+
+  .app-tabs button {
+    flex: 0 0 auto;
+    padding: 9px 12px;
+    font-size: 0.82rem;
+  }
+
+  .grid {
+    grid-template-columns: 1fr;
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+
+  .card,
+  .section,
+  .settings-panel {
+    padding: 12px;
+    border-radius: 7px;
+  }
+
+  .section {
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  table {
+    min-width: 760px;
+    font-size: 0.78rem;
+  }
+
+  th,
+  td {
+    padding: 7px 8px;
+  }
+
+  .sl-tp-col {
+    min-width: 170px;
+  }
+
+  .sl-tp-inputs {
+    gap: 4px;
+  }
+
+  .sl-tp-inputs input {
+    width: 48px;
+    padding: 4px;
+  }
+
+  .sl-tp-inputs button {
+    padding: 4px 7px;
+  }
+
+  .manual-btns {
+    flex-direction: column;
+    white-space: normal;
+  }
+
+  .alloc-pie {
+    width: 150px;
+    height: 150px;
+  }
+}
+
 .settings-panel h2 {
   font-size: 1rem;
   margin-bottom: 12px;

@@ -10,6 +10,12 @@ def test_sl_tp_prices_long():
     assert tp == 104.0
 
 
+def test_sl_tp_prices_short_are_reversed():
+    sl, tp = sl_tp_prices_from_pct(100.0, PositionSide.SHORT, 2.0, 4.0)
+    assert sl == 102.0
+    assert tp == 96.0
+
+
 def test_manual_sl_tp_persisted():
     pm = PortfolioManager(TradeMode.PAPER, 10_000)
     cfg = AppConfig(instrument_type=InstrumentType.SWAP, leverage=10)
