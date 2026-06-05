@@ -24,6 +24,8 @@ async def live_open(
     inst_id: str,
     side: PositionSide,
     size_usdt: float,
+    order_type: str = "market",
+    limit_price: float = 0.0,
 ) -> tuple[bool, str, float]:
     client = get_okx_client(
         config.okx_api_key,
@@ -37,9 +39,12 @@ async def live_open(
     ticker = client.get_ticker(inst_id)
     if not ticker:
         return False, "ticker lookup failed", 0.0
-    price = float(ticker.get("last", 0))
+    market_price = float(ticker.get("last", 0))
+    price = limit_price if order_type == "limit" and limit_price > 0 else market_price
     if price <= 0:
         return False, "invalid ticker price", 0.0
+    if order_type not in {"market", "limit"}:
+        return False, "invalid order type", 0.0
 
     td_mode = _td_mode(config)
     if config.instrument_type != InstrumentType.SPOT:
@@ -75,11 +80,14 @@ async def live_open(
         inst_id=inst_id,
         side=order_side,
         sz=sz,
+        ord_type=order_type,
         td_mode=td_mode,
         pos_side=pos_side or "long",
+        px=f"{price:.12f}".rstrip("0").rstrip(".") if order_type == "limit" else "",
     )
     if result:
-        return True, f"order accepted ordId={result.get('ordId', '')}", price
+        label = "limit" if order_type == "limit" else "market"
+        return True, f"{label} order accepted ordId={result.get('ordId', '')}", price
     return False, f"order failed: {client.last_error or 'unknown'}", 0.0
 
 

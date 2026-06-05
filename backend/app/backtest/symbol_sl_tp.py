@@ -17,6 +17,7 @@ from app.backtest.engine import (
 )
 from app.backtest.models import BacktestLogEntry, BacktestTrade
 from app.models import AppConfig, PositionSide, StrategyMode, utc_now_iso
+from app.sl_tp_utils import pnl_pct_to_price_pct
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 PROFILES_FILE = DATA_DIR / "symbol_sl_tp_profiles.json"
@@ -269,10 +270,13 @@ def plan_prices(
     side: PositionSide,
     sl_pct: float,
     tp_pct: float,
+    leverage: int = 1,
 ) -> tuple[float, float]:
+    sl_price_pct = pnl_pct_to_price_pct(sl_pct, leverage, "swap")
+    tp_price_pct = pnl_pct_to_price_pct(tp_pct, leverage, "swap")
     if side == PositionSide.LONG:
-        return entry * (1 - sl_pct / 100), entry * (1 + tp_pct / 100)
-    return entry * (1 + sl_pct / 100), entry * (1 - tp_pct / 100)
+        return entry * (1 - sl_price_pct / 100), entry * (1 + tp_price_pct / 100)
+    return entry * (1 + sl_price_pct / 100), entry * (1 - tp_price_pct / 100)
 
 
 def profiles_for_client() -> list[dict[str, Any]]:

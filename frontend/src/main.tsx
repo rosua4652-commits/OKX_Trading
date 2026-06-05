@@ -1,10 +1,11 @@
-import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
+﻿import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   closeAll,
   closePosition,
   connectWS,
   fetchStatus,
+  fetchTrades,
   manualOrder,
   resetPaper,
   scanNow,
@@ -23,7 +24,7 @@ import {
   ChartModal,
   type ChartViewTarget,
 } from "./ChartModal";
-import { fmtNum, fmtPrice, fmtUsd, fmtVolumeUsdt } from "./format";
+import { fmtNum, fmtPnlUsdt, fmtPrice, fmtUsd, fmtVolumeUsdt } from "./format";
 import { describeBalancePctEntry, explainOrderSize, marginModeLabel, orderSizeBasisLabel, positionSizeModeLabel } from "./orderSize";
 import {
   chartStrategyKey,
@@ -50,6 +51,7 @@ function App() {
   const [mainTab, setMainTab] = useState<"trade" | "exits" | "backtest">("trade");
   const [exitFilter, setExitFilter] = useState<"all" | "sl" | "tp" | "other">("all");
   const configLockedRef = useRef(false);
+  const refreshInFlightRef = useRef(false);
 
   const lockConfigEdits = () => {
     configLockedRef.current = true;
@@ -74,20 +76,41 @@ function App() {
   }, [apiDraft]);
 
   const refresh = useCallback(async () => {
-    const s = await fetchStatus();
-    applyServerState(s);
+    if (refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
+    try {
+      const s = await fetchStatus();
+      applyServerState(s);
+    } finally {
+      refreshInFlightRef.current = false;
+    }
   }, [applyServerState]);
 
   useEffect(() => {
     refresh();
     const ws = connectWS((d) => applyServerState(d));
-    const iv = setInterval(refresh, 10000);
+    const iv = setInterval(refresh, 3000);
     return () => { ws.close(); clearInterval(iv); };
   }, [refresh, applyServerState]);
+
+  useEffect(() => {
+    if (mainTab !== "exits") return;
+    let cancelled = false;
+    fetchTrades()
+      .then((res) => {
+        if (cancelled) return;
+        setData((prev) => (prev ? { ...prev, trades: res.trades ?? [] } : prev));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [mainTab]);
 
   if (!data || !config) return <div className="app">Loading...</div>;
 
   const { portfolio, bot, candidates } = data;
+  const decisionLogs = bot.activity_log.filter((log) => log.phase === "decision");
   const running = bot.status.running;
   const nextOrderDetailRaw = data.next_order_size_detail;
   const nextOrderComputed = explainOrderSize(config, portfolio);
@@ -101,6 +124,21 @@ function App() {
 
   const isPaper = config.trade_mode === "paper";
   const moneyTag = isPaper ? "USD · 모의" : "USD";
+
+  const liqRisk = (p: Position) => {
+    const liq = p.liquidation_price ?? 0;
+    if (!liq || !p.current_price || !p.stop_loss) return null;
+    const current = p.current_price;
+    const sl = p.stop_loss;
+    if (p.side === "long") {
+      const denom = current - liq;
+      if (denom <= 0) return "위험";
+      return (current - sl) / denom < 0.25 ? "청산가 근접" : null;
+    }
+    const denom = liq - current;
+    if (denom <= 0) return "위험";
+    return (sl - current) / denom < 0.25 ? "청산가 근접" : null;
+  };
 
   const patchConfig = (patch: Partial<AppConfig>) => {
     lockConfigEdits();
@@ -119,11 +157,14 @@ function App() {
       const res = await updateConfig(payload);
       setApiDraft({ key: "", secret: "", pass: "" });
       configLockedRef.current = false;
+      if (res?.config) {
+        setConfig(res.config);
+      }
       setConfigSaveStatus(res?.ok === false ? "error" : "saved");
       if (res?.ok !== false) {
         window.setTimeout(() => setConfigSaveStatus("idle"), 4000);
       }
-      refresh().catch(() => undefined);
+      window.setTimeout(() => refresh().catch(() => undefined), 500);
     } catch {
       configLockedRef.current = false;
       setConfigSaveStatus("error");
@@ -570,14 +611,14 @@ function App() {
               </div>
             )}
             <div className="settings-row">
-              <label>손절 % (SL)</label>
+              <label>손절 PnL% (SL)</label>
               <input type="number" step="0.1" value={config.stop_loss_pct}
                 disabled={!!config.backtest_auto_sl_tp}
                 title={config.backtest_auto_sl_tp ? "백테스트 SL/TP 자동이 켜져 있어 백테스트 결과로 갱신됩니다" : ""}
                 onChange={(e) => patchConfig({ stop_loss_pct: Number(e.target.value) })} />
             </div>
             <div className="settings-row">
-              <label>익절 % (TP)</label>
+              <label>익절 PnL% (TP)</label>
               <input type="number" step="0.1" value={config.take_profit_pct}
                 disabled={!!config.backtest_auto_sl_tp}
                 title={config.backtest_auto_sl_tp ? "백테스트 SL/TP 자동이 켜져 있어 백테스트 결과로 갱신됩니다" : ""}
@@ -603,6 +644,70 @@ function App() {
                 </span>
               </label>
             </div>
+            <div className="settings-row settings-check-block">
+              <label className="settings-check">
+                <input
+                  type="checkbox"
+                  checked={config.trend_scale_in !== false}
+                  onChange={(e) => patchConfig({ trend_scale_in: e.target.checked })}
+                />
+                <span>
+                  <strong>추세추종 추가진입</strong>
+                  <br />
+                  <span className="settings-check-desc">
+                    수익권에서 체결량·EMA20/50·MACD·캔들이 같은 방향으로 강할 때만 기존 포지션에 추가진입합니다.
+                  </span>
+                </span>
+              </label>
+            </div>
+            <div className="settings-row">
+              <label>추가진입 최대 횟수</label>
+              <input
+                type="number"
+                min={0}
+                max={5}
+                value={config.max_scale_ins ?? 2}
+                disabled={config.trend_scale_in === false}
+                onChange={(e) => patchConfig({ max_scale_ins: Number(e.target.value) })}
+              />
+            </div>
+            <div className="settings-row">
+              <label>추가진입 크기 (%)</label>
+              <input
+                type="number"
+                min={5}
+                max={100}
+                step={5}
+                value={config.scale_in_size_pct ?? 50}
+                disabled={config.trend_scale_in === false}
+                onChange={(e) => patchConfig({ scale_in_size_pct: Number(e.target.value) })}
+              />
+            </div>
+            <div className="settings-row">
+              <label>추가진입 최소 ROI%</label>
+              <input
+                type="number"
+                min={0}
+                step={0.5}
+                value={config.scale_in_min_pnl_pct ?? 3}
+                disabled={config.trend_scale_in === false}
+                onChange={(e) => patchConfig({ scale_in_min_pnl_pct: Number(e.target.value) })}
+              />
+            </div>
+            <div className="settings-row">
+              <label>추세 이탈 확인 캔들</label>
+              <input
+                type="number"
+                min={1}
+                max={6}
+                value={config.trend_exit_confirm_bars ?? 3}
+                disabled={config.trend_scale_in === false}
+                onChange={(e) => patchConfig({ trend_exit_confirm_bars: Number(e.target.value) })}
+              />
+            </div>
+            <p style={{ fontSize: "0.75rem", color: "#8b949e", gridColumn: "1 / -1", marginTop: -6 }}>
+              추세 이탈 청산 확인용입니다. 단타는 1캔들=5분, 장타는 1캔들=1시간입니다.
+            </p>
             <p style={{ fontSize: "0.8rem", color: "#8b949e", gridColumn: "1 / -1" }}>
               단타 기본 SL {config.stop_loss_pct}% / TP {config.take_profit_pct}%
               {config.backtest_auto_sl_tp && " (자동 — 백테스트 완료 시 갱신)"}
@@ -754,7 +859,7 @@ function App() {
         <div className="card">
           <h3>미실현 PnL</h3>
           <div className={`value ${portfolio.unrealized_pnl >= 0 ? "positive" : "negative"}`}>
-            {portfolio.unrealized_pnl >= 0 ? "+" : ""}{fmtUsd(portfolio.unrealized_pnl, 2)}
+            {portfolio.unrealized_pnl >= 0 ? "+" : ""}${fmtPnlUsdt(portfolio.unrealized_pnl)}
           </div>
         </div>
         <div className="card">
@@ -815,7 +920,7 @@ function App() {
                 <th>진입가</th>
                 <th>현재가</th>
                 <th>명목</th>
-                <th>PnL</th>
+                <th>PnL(USDT)</th>
                 <th>SL / TP</th>
                 <th>전략</th>
                 <th>차트</th>
@@ -839,7 +944,15 @@ function App() {
                   </td>
                   <td>{fmtNum(p.quantity, 4)}</td>
                   <td>${fmtPrice(p.entry_price)}</td>
-                  <td>${fmtPrice(p.current_price)}</td>
+                  <td>
+                    ${fmtPrice(p.current_price)}
+                    {p.liquidation_price && p.liquidation_price > 0 && (
+                      <div className={liqRisk(p) ? "liq-risk warn" : "liq-risk"}>
+                        청산 ${fmtPrice(p.liquidation_price)}
+                        {liqRisk(p) && ` · ${liqRisk(p)}`}
+                      </div>
+                    )}
+                  </td>
                   <td className="muted" title="포지션 명목 가치">
                     ${fmtNum(
                       p.notional_usdt && p.notional_usdt > 0
@@ -849,7 +962,7 @@ function App() {
                     )}
                   </td>
                   <td className={p.unrealized_pnl >= 0 ? "positive" : "negative"}>
-                    {p.unrealized_pnl >= 0 ? "+" : ""}{fmtNum(p.unrealized_pnl)} ({fmtNum(p.unrealized_pnl_pct, 1)}%)
+                    {p.unrealized_pnl >= 0 ? "+" : ""}{fmtPnlUsdt(p.unrealized_pnl)} USDT (ROI {fmtNum(p.unrealized_pnl_pct, 1)}%)
                   </td>
                   <td className="sl-tp-col">
                     <PositionSlTpEditor position={p} onSaved={refresh} />
@@ -858,6 +971,11 @@ function App() {
                     <span className={`badge ${p.strategy_mode === "swing" ? "swing" : "long"}`}>
                       {p.strategy_mode === "swing" ? "장타" : "단타"}
                     </span>
+                    {(p.scale_in_count ?? 0) > 0 && (
+                      <div className="muted" style={{ marginTop: 4, fontSize: "0.7rem" }}>
+                        추가진입 {p.scale_in_count}회
+                      </div>
+                    )}
                   </td>
                   <td onClick={(e) => e.stopPropagation()}>
                     <button type="button" onClick={() => openPositionChart(p)}>차트</button>
@@ -870,6 +988,54 @@ function App() {
             </tbody>
           </table>
         )}
+      </div>
+
+      {(data.pending_orders?.length ?? 0) > 0 && (
+        <div className="section pending-orders">
+          <h2>미체결 주문 ({data.pending_orders?.length ?? 0})</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>종목</th>
+                <th>방향</th>
+                <th>종류</th>
+                <th>가격</th>
+                <th>수량</th>
+                <th>체결</th>
+                <th>상태</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.pending_orders?.map((o) => (
+                <tr key={o.ord_id || `${o.inst_id}-${o.ts}`}>
+                  <td>{o.inst_id}</td>
+                  <td>{o.side.toUpperCase()} {o.pos_side && `(${o.pos_side})`}</td>
+                  <td>{o.order_type}</td>
+                  <td>${fmtPrice(o.price)}</td>
+                  <td>{fmtNum(o.size, 4)}</td>
+                  <td>{fmtNum(o.filled_size, 4)}</td>
+                  <td>{o.state || "live"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="section decision-log-section">
+        <h2>AI 판단 로그 ({decisionLogs.length})</h2>
+        <div className="log-scroll decision-log-scroll">
+          {decisionLogs.length === 0 ? (
+            <p className="empty-log">아직 판단 로그가 없습니다. 자동매매 스캔이 돌면 후보 평가·진입 통과·거절 사유가 여기에 표시됩니다.</p>
+          ) : (
+            decisionLogs.slice(0, 80).map((log, i) => (
+              <div key={i} className={`log-entry ${log.level}`}>
+                <span className="ts">{log.ts?.slice(11, 19)}</span>
+                {log.message}
+              </div>
+            ))
+          )}
+        </div>
       </div>
 
       <div className="section">
@@ -917,15 +1083,17 @@ function App() {
 
       <div className="section">
         <h2>활동 로그</h2>
-        {bot.activity_log.slice(0, 20).map((log, i) => (
-          <div
-            key={i}
-            className={`log-entry ${log.level}${log.phase === "config" ? " config" : ""}`}
-          >
-            <span className="ts">{log.ts?.slice(11, 19)}</span>
-            [{log.phase}] {log.message}
-          </div>
-        ))}
+        <div className="log-scroll">
+          {bot.activity_log.slice(0, 120).map((log, i) => (
+            <div
+              key={i}
+              className={`log-entry ${log.level}${log.phase === "config" ? " config" : ""}`}
+            >
+              <span className="ts">{log.ts?.slice(11, 19)}</span>
+              <span className="phase">[{log.phase}]</span> {log.message}
+            </div>
+          ))}
+        </div>
       </div>
         </>
       )}
@@ -1038,7 +1206,7 @@ function ExitHistoryPanel({
                 <th>청산 시세</th>
                 <th>가격 변동</th>
                 <th>명목</th>
-                <th>PnL</th>
+                <th>PnL(USDT)</th>
                 <th>사유</th>
               </tr>
             </thead>
@@ -1069,7 +1237,7 @@ function ExitHistoryPanel({
                   </td>
                   <td>${fmtNum(t.notional_usdt ?? 0, 0)}</td>
                   <td className={t.pnl >= 0 ? "positive" : "negative"}>
-                    {t.pnl >= 0 ? "+" : ""}{fmtNum(t.pnl)} ({fmtNum(t.pnl_pct, 1)}%)
+                    {t.pnl >= 0 ? "+" : ""}{fmtNum(t.pnl)} USDT (ROI {fmtNum(t.pnl_pct, 1)}%)
                   </td>
                   <td style={{ fontSize: "0.8rem", color: "#8b949e", maxWidth: 220 }}>
                     {t.reason}
@@ -1101,6 +1269,37 @@ function CandidateRows({
   onOpenChart: () => void;
   onRefresh: () => void;
 }) {
+  const [orderType, setOrderType] = useState<"market" | "limit">("market");
+  const [limitPrice, setLimitPrice] = useState(fmtPrice(c.last_price));
+  const [manualMsg, setManualMsg] = useState("");
+  const [manualBusy, setManualBusy] = useState(false);
+
+  const submitManual = async (side: "long" | "short") => {
+    const px = Number(limitPrice);
+    if (orderType === "limit" && (!Number.isFinite(px) || px <= 0)) {
+      setManualMsg("지정가를 입력하세요");
+      return;
+    }
+    setManualBusy(true);
+    setManualMsg("");
+    try {
+      const res = await manualOrder(
+        c.inst_id,
+        side,
+        orderSizeUsdt,
+        config.leverage,
+        orderType,
+        orderType === "limit" ? px : 0,
+      );
+      setManualMsg(res.ok ? (res.message || "주문 완료") : (res.message || "주문 실패"));
+      onRefresh();
+    } catch {
+      setManualMsg("주문 요청 실패");
+    } finally {
+      setManualBusy(false);
+    }
+  };
+
   return (
     <>
       <tr
@@ -1144,21 +1343,52 @@ function CandidateRows({
           {c.short_swing_ok ? " ✓숏장" : ""}
         </td>
         <td style={{ fontSize: "0.75rem", color: "#8b949e" }}>{c.reasons.slice(0, 3).join(", ")}</td>
-        <td className="manual-btns" onClick={(e) => e.stopPropagation()}>
-          <button type="button" onClick={onOpenChart}>차트</button>
-          <button
-            className="long"
-            onClick={() => manualOrder(c.inst_id, "long", orderSizeUsdt, config.leverage).then(onRefresh)}
-          >
-            롱
-          </button>
-          {config.instrument_type !== "spot" && (
+        <td className="manual-cell" onClick={(e) => e.stopPropagation()}>
+          <div className="manual-btns">
+            <button type="button" onClick={onOpenChart}>차트</button>
             <button
-              className="short"
-              onClick={() => manualOrder(c.inst_id, "short", orderSizeUsdt, config.leverage).then(onRefresh)}
+              className="long"
+              disabled={manualBusy}
+              onClick={() => submitManual("long")}
             >
-              숏
+              롱
             </button>
+            {config.instrument_type !== "spot" && (
+              <button
+                className="short"
+                disabled={manualBusy}
+                onClick={() => submitManual("short")}
+              >
+                숏
+              </button>
+            )}
+          </div>
+          <div className="manual-order-controls">
+            <select value={orderType} onChange={(e) => setOrderType(e.target.value as "market" | "limit")}>
+              <option value="market">시장가</option>
+              <option value="limit">지정가</option>
+            </select>
+            <input
+              type="number"
+              min={0}
+              step="any"
+              value={limitPrice}
+              disabled={orderType === "market"}
+              onChange={(e) => setLimitPrice(e.target.value)}
+              aria-label={`${c.inst_id} 지정가`}
+            />
+            <button
+              type="button"
+              disabled={manualBusy}
+              onClick={() => setLimitPrice(fmtPrice(c.last_price))}
+            >
+              현재가
+            </button>
+          </div>
+          {manualMsg && (
+            <div className={manualMsg.includes("실패") || manualMsg.includes("오류") ? "manual-msg error" : "manual-msg"}>
+              {manualMsg}
+            </div>
           )}
         </td>
       </tr>

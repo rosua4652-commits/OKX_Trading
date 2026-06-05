@@ -154,6 +154,39 @@ class OKXClient:
             logger.error("get_positions error: %s", e)
         return []
 
+    def get_fills_history(
+        self,
+        inst_type: str = "SWAP",
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        self._ensure_imports()
+        if not self._trade:
+            return []
+        try:
+            result = self._trade.get_fills_history(instType=inst_type, limit=str(limit))
+            if self._ok(result):
+                return result.get("data", [])
+            logger.error("get_fills_history failed: %s", result)
+        except Exception as e:
+            logger.error("get_fills_history error: %s", e)
+        return []
+
+    def get_pending_orders(
+        self,
+        inst_type: str = "SWAP",
+    ) -> list[dict[str, Any]]:
+        self._ensure_imports()
+        if not self._trade:
+            return []
+        try:
+            result = self._trade.get_order_list(instType=inst_type)
+            if self._ok(result):
+                return result.get("data", [])
+            logger.error("get_order_list failed: %s", result)
+        except Exception as e:
+            logger.error("get_order_list error: %s", e)
+        return []
+
     def set_leverage(
         self,
         inst_id: str,

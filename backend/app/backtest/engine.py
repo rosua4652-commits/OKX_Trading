@@ -15,6 +15,7 @@ from app.market.entry_analyzer import _analyze_closes
 from app.models import (
     AppConfig,
     CoinCandidate,
+    InstrumentType,
     PortfolioSnapshot,
     Position,
     PositionSide,
@@ -61,6 +62,8 @@ class _SimPos:
     tp_pct: float
     trailing_high: float
     score: float
+    scale_in_count: int = 0
+    last_scale_price: float = 0.0
 
 
 @dataclass
@@ -161,9 +164,9 @@ def _record_close(
     else:
         pnl = sim.notional * (sim.entry_price - price) / sim.entry_price
     pnl -= fee
-    pnl_pct = pnl / sim.notional * 100 if sim.notional > 0 else 0
     lev = max(1, leverage)
     margin = sim.notional / lev
+    pnl_pct = pnl / margin * 100 if margin > 0 else 0
     state.trades.append(
         BacktestTrade(
             inst_id=inst_id,
@@ -213,8 +216,15 @@ def _close_open_positions(
         del state.positions[iid]
 
 
-def _sl_tp_prices(entry: float, side: PositionSide, sl_pct: float, tp_pct: float) -> tuple[float, float]:
-    sl_r, tp_r = sl_pct / 100, tp_pct / 100
+def _sl_tp_prices(
+    entry: float,
+    side: PositionSide,
+    sl_pct: float,
+    tp_pct: float,
+    leverage: int = 1,
+) -> tuple[float, float]:
+    lev = max(1, leverage)
+    sl_r, tp_r = (sl_pct / lev) / 100, (tp_pct / lev) / 100
     if side == PositionSide.LONG:
         return entry * (1 - sl_r), entry * (1 + tp_r)
     return entry * (1 + sl_r), entry * (1 - tp_r)
@@ -240,7 +250,8 @@ def _to_position(sim: _SimPos, price: float, config: AppConfig) -> Position:
         upnl = (price - sim.entry_price) * sim.quantity
     else:
         upnl = (sim.entry_price - price) * sim.quantity
-    upnl_pct = upnl / cost * 100 if cost > 0 else 0
+    margin = cost / max(1, config.leverage) if config.instrument_type != InstrumentType.SPOT else cost
+    upnl_pct = upnl / margin * 100 if margin > 0 else 0
     return Position(
         id="bt",
         inst_id=sim.inst_id,
@@ -255,9 +266,109 @@ def _to_position(sim: _SimPos, price: float, config: AppConfig) -> Position:
         strategy_mode=sim.strategy,
         instrument_type=config.instrument_type,
         trailing_high=sim.trailing_high,
+        notional_usdt=sim.notional,
+        scale_in_count=sim.scale_in_count,
+        last_scale_price=sim.last_scale_price or sim.entry_price,
         unrealized_pnl=upnl,
         unrealized_pnl_pct=upnl_pct,
     )
+
+
+def _ema(values: np.ndarray, period: int) -> np.ndarray:
+    if len(values) == 0:
+        return values
+    alpha = 2 / (period + 1)
+    out = np.empty_like(values, dtype=float)
+    out[0] = values[0]
+    for i in range(1, len(values)):
+        out[i] = alpha * values[i] + (1 - alpha) * out[i - 1]
+    return out
+
+
+def _macd_hist(closes: np.ndarray) -> np.ndarray:
+    if len(closes) < 35:
+        return np.array([])
+    macd = _ema(closes, 12) - _ema(closes, 26)
+    return macd - _ema(macd, 9)
+
+
+def _trend_break_signal_bt(
+    sim: _SimPos,
+    candles: list[list],
+    idx: int,
+    cfg: AppConfig,
+) -> tuple[bool, str]:
+    if not cfg.trend_scale_in:
+        return False, ""
+    window = candles[: idx + 1]
+    if len(window) < 55:
+        return False, ""
+    opens = np.array([float(c[1]) for c in window])
+    closes = np.array([float(c[4]) for c in window])
+    volumes = np.array([float(c[5]) for c in window])
+    pos = _to_position(sim, float(closes[-1]), cfg)
+    if pos.unrealized_pnl_pct < max(2.0, cfg.scale_in_min_pnl_pct * 0.7):
+        return False, ""
+    ema20 = _ema(closes, 20)
+    hist = _macd_hist(closes)
+    if len(hist) < 4:
+        return False, ""
+    confirm_bars = max(1, min(6, int(cfg.trend_exit_confirm_bars or 3)))
+    recent = range(len(closes) - confirm_bars, len(closes))
+    vol_avg = float(np.mean(volumes[-20:])) if len(volumes) else 0.0
+    vol_ratio = float(volumes[-1] / vol_avg) if vol_avg > 0 else 1.0
+    if sim.side == PositionSide.LONG:
+        macd_turn = hist[-1] < hist[-2] < hist[-3] and hist[-1] < 0
+        candle_break = all(closes[i] < ema20[i] for i in recent) and closes[-1] < opens[-1]
+    else:
+        macd_turn = hist[-1] > hist[-2] > hist[-3] and hist[-1] > 0
+        candle_break = all(closes[i] > ema20[i] for i in recent) and closes[-1] > opens[-1]
+    if pos.unrealized_pnl > 0 and macd_turn and candle_break and vol_ratio >= 1.2:
+        return True, f"추세 이탈 ({confirm_bars}캔들 확인)"
+    return False, ""
+
+
+def _trend_scale_signal_bt(
+    sim: _SimPos,
+    candles: list[list],
+    idx: int,
+    cfg: AppConfig,
+) -> tuple[bool, str]:
+    if not cfg.trend_scale_in or sim.scale_in_count >= cfg.max_scale_ins:
+        return False, ""
+    window = candles[: idx + 1]
+    if len(window) < 55:
+        return False, ""
+    opens = np.array([float(c[1]) for c in window])
+    highs = np.array([float(c[2]) for c in window])
+    lows = np.array([float(c[3]) for c in window])
+    closes = np.array([float(c[4]) for c in window])
+    volumes = np.array([float(c[5]) for c in window])
+    pos = _to_position(sim, float(closes[-1]), cfg)
+    if pos.unrealized_pnl_pct < cfg.scale_in_min_pnl_pct:
+        return False, ""
+    ema20 = _ema(closes, 20)
+    ema50 = _ema(closes, 50)
+    hist = _macd_hist(closes)
+    if len(hist) < 4:
+        return False, ""
+    vol_avg = float(np.mean(volumes[-20:])) if len(volumes) else 0.0
+    vol_ratio = float(volumes[-1] / vol_avg) if vol_avg > 0 else 1.0
+    candle_range = max(float(highs[-1] - lows[-1]), float(closes[-1]) * 0.0001)
+    strong_body = abs(float(closes[-1] - opens[-1])) / candle_range >= 0.45
+    last_scale = sim.last_scale_price or sim.entry_price
+    if sim.side == PositionSide.LONG:
+        trend_ok = closes[-1] > ema20[-1] > ema50[-1] and ema20[-1] > ema20[-4]
+        macd_ok = hist[-1] > 0 and hist[-1] > hist[-2] > hist[-3]
+        candle_ok = closes[-1] > opens[-1] and closes[-1] >= highs[-1] - candle_range * 0.25
+        spacing_ok = closes[-1] >= last_scale * 1.004
+    else:
+        trend_ok = closes[-1] < ema20[-1] < ema50[-1] and ema20[-1] < ema20[-4]
+        macd_ok = hist[-1] < 0 and hist[-1] < hist[-2] < hist[-3]
+        candle_ok = closes[-1] < opens[-1] and closes[-1] <= lows[-1] + candle_range * 0.25
+        spacing_ok = closes[-1] <= last_scale * 0.996
+    ok = trend_ok and macd_ok and candle_ok and strong_body and vol_ratio >= 1.5 and spacing_ok
+    return ok, f"추가진입 조건 (거래량 {vol_ratio:.1f}배)"
 
 
 def simulate_symbol(
@@ -292,6 +403,11 @@ def simulate_symbol(
                 continue
             sim = state.positions[iid]
             pos = _to_position(sim, price, cfg)
+            trend_exit, trend_reason = _trend_break_signal_bt(sim, candles, i, cfg)
+            if trend_exit:
+                _record_close(sim, inst_id, price, i, state, logs, trend_reason, cfg.leverage)
+                del state.positions[iid]
+                continue
             exit_flag, reason = should_exit(pos, cfg)
             if exit_flag:
                 _record_close(sim, inst_id, price, i, state, logs, reason, cfg.leverage)
@@ -303,6 +419,38 @@ def simulate_symbol(
                 sim.trailing_high = max(sim.trailing_high, price)
             else:
                 sim.trailing_high = min(sim.trailing_high, price) if sim.trailing_high > 0 else price
+            scale_ok, scale_reason = _trend_scale_signal_bt(sim, candles, i, cfg)
+            if scale_ok:
+                snap = _portfolio_snap(state)
+                base_notional = resolve_order_size_usdt(cfg, snap, open_positions=len(state.positions))
+                add_notional = base_notional * max(5.0, min(100.0, cfg.scale_in_size_pct)) / 100
+                if add_notional > 0:
+                    add_qty = add_notional / price if price > 0 else 0
+                    old_qty = sim.quantity
+                    new_qty = old_qty + add_qty
+                    if new_qty > 0:
+                        sim.entry_price = ((sim.entry_price * old_qty) + (price * add_qty)) / new_qty
+                        sim.quantity = new_qty
+                        sim.notional += add_notional
+                        sim.scale_in_count += 1
+                        sim.last_scale_price = price
+                        sim.stop_loss, sim.take_profit = _sl_tp_prices(
+                            sim.entry_price,
+                            sim.side,
+                            sim.sl_pct,
+                            sim.tp_pct,
+                            cfg.leverage,
+                        )
+                        logs.append(
+                            BacktestLogEntry(
+                                ts=_utc_now(),
+                                level="info",
+                                message=(
+                                    f"{inst_id} 백테스트 추가진입 #{sim.scale_in_count} "
+                                    f"bar={i} 명목 ${add_notional:,.0f} · {scale_reason}"
+                                ),
+                            )
+                        )
             continue
 
         if len(state.positions) >= cfg.max_positions:
@@ -321,7 +469,7 @@ def simulate_symbol(
                 continue
 
             sl_pct, tp_pct = sl_tp_pcts(cfg, strat)
-            sl, tp = _sl_tp_prices(price, side, sl_pct, tp_pct)
+            sl, tp = _sl_tp_prices(price, side, sl_pct, tp_pct, cfg.leverage)
             notional = resolve_order_size_usdt(cfg, snap, open_positions=len(state.positions))
             lev = max(1, cfg.leverage)
             margin = notional / lev
@@ -339,6 +487,7 @@ def simulate_symbol(
                 tp_pct=tp_pct,
                 trailing_high=price,
                 score=cand.score,
+                last_scale_price=price,
             )
             logs.append(
                 BacktestLogEntry(
@@ -815,6 +964,11 @@ def build_result(
             "take_profit_pct": config.take_profit_pct,
             "stop_loss_pct_applied": run_cfg.stop_loss_pct,
             "take_profit_pct_applied": run_cfg.take_profit_pct,
+            "trend_scale_in": run_cfg.trend_scale_in,
+            "max_scale_ins": run_cfg.max_scale_ins,
+            "scale_in_size_pct": run_cfg.scale_in_size_pct,
+            "scale_in_min_pnl_pct": run_cfg.scale_in_min_pnl_pct,
+            "trend_exit_confirm_bars": run_cfg.trend_exit_confirm_bars,
             "start_equity": start_equity,
             "end_equity": metrics.end_equity,
             "order_notional_usdt": metrics.order_notional_usdt,

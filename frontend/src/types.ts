@@ -9,9 +9,13 @@ export interface Position {
   take_profit: number;
   sl_pct?: number;
   tp_pct?: number;
+  sl_usdt?: number;
+  tp_usdt?: number;
   sl_tp_note?: string;
   sl_tp_manual?: boolean;
   auto_sl_tp_disabled?: boolean;
+  auto_sl_disabled?: boolean;
+  auto_tp_disabled?: boolean;
   unrealized_pnl: number;
   unrealized_pnl_pct: number;
   entry_reason: string;
@@ -21,6 +25,9 @@ export interface Position {
   opened_at?: string;
   leverage?: number;
   notional_usdt?: number;
+  liquidation_price?: number;
+  scale_in_count?: number;
+  last_scale_price?: number;
 }
 
 export interface CoinCandidate {
@@ -75,6 +82,11 @@ export interface AppConfig {
   min_score: number;
   backtest_auto_settings?: boolean;
   backtest_auto_sl_tp?: boolean;
+  trend_scale_in?: boolean;
+  max_scale_ins?: number;
+  scale_in_size_pct?: number;
+  scale_in_min_pnl_pct?: number;
+  trend_exit_confirm_bars?: number;
   backtest_interval_minutes?: number;
   scan_symbols?: string[];
   paper_initial_balance: number;
@@ -101,6 +113,19 @@ export interface TradeRecord {
   notional_usdt?: number;
   strategy_mode?: string;
   mode?: string;
+  ts: string;
+}
+
+export interface PendingOrder {
+  inst_id: string;
+  ord_id: string;
+  side: string;
+  pos_side: string;
+  order_type: string;
+  price: number;
+  size: number;
+  filled_size: number;
+  state: string;
   ts: string;
 }
 
@@ -292,6 +317,7 @@ export interface StatusData {
     slots_remaining: number;
     order_size_basis: string;
   };
+  pending_orders?: PendingOrder[];
   trades?: TradeRecord[];
   backtest?: BacktestBundle;
 }

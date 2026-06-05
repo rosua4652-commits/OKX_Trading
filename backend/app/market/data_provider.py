@@ -25,6 +25,7 @@ BAR_MAP = {
 class MarketDataProvider:
     def __init__(self) -> None:
         self._ticker_cache: dict[str, tuple[float, list[dict]]] = {}
+        self._single_ticker_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._candle_cache: dict[str, tuple[float, list]] = {}
 
     def _inst_type(self, instrument: InstrumentType) -> str:
@@ -42,8 +43,30 @@ class MarketDataProvider:
         return data
 
     async def ticker(self, inst_id: str) -> dict[str, Any] | None:
+        now = time.time()
+        cached = self._single_ticker_cache.get(inst_id)
+        if cached and now - cached[0] < 0.5:
+            return cached[1]
         client = get_okx_client()
-        return await asyncio.to_thread(client.get_ticker, inst_id)
+        data = await asyncio.to_thread(client.get_ticker, inst_id)
+        if data:
+            self._single_ticker_cache[inst_id] = (now, data)
+        return data
+
+    async def prices_for(self, inst_ids: list[str]) -> dict[str, float]:
+        unique = [x for x in dict.fromkeys(inst_ids) if x]
+        if not unique:
+            return {}
+        rows = await asyncio.gather(*(self.ticker(inst_id) for inst_id in unique), return_exceptions=True)
+        out: dict[str, float] = {}
+        for inst_id, row in zip(unique, rows):
+            if isinstance(row, Exception) or not row:
+                continue
+            try:
+                out[inst_id] = float(row.get("last", 0))
+            except (TypeError, ValueError):
+                continue
+        return out
 
     async def candles(
         self,

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
@@ -62,6 +62,11 @@ class AppConfig(BaseModel):
     min_score: float = 55.0
     backtest_auto_settings: bool = False
     backtest_auto_sl_tp: bool = False
+    trend_scale_in: bool = True
+    max_scale_ins: int = Field(default=2, ge=0, le=5)
+    scale_in_size_pct: float = Field(default=50.0, ge=5.0, le=100.0)
+    scale_in_min_pnl_pct: float = Field(default=3.0, ge=0.0, le=100.0)
+    trend_exit_confirm_bars: int = Field(default=3, ge=1, le=6)
     backtest_interval_minutes: int = Field(default=60, ge=1, le=1440)
     paper_initial_balance: float = Field(default=10_000.0, gt=0)
     okx_api_key: str = ""
@@ -81,9 +86,13 @@ class Position(BaseModel):
     take_profit: float = 0.0
     sl_pct: float = 0.0
     tp_pct: float = 0.0
+    sl_usdt: float = 0.0
+    tp_usdt: float = 0.0
     sl_tp_note: str = ""
     sl_tp_manual: bool = False
     auto_sl_tp_disabled: bool = False
+    auto_sl_disabled: bool = False
+    auto_tp_disabled: bool = False
     trailing_high: float = 0.0
     strategy_mode: StrategyMode = StrategyMode.SCALP
     instrument_type: InstrumentType = InstrumentType.SWAP
@@ -92,8 +101,24 @@ class Position(BaseModel):
     opened_at: str = ""
     leverage: int = 0
     notional_usdt: float = 0.0
+    liquidation_price: float = 0.0
+    scale_in_count: int = 0
+    last_scale_price: float = 0.0
     unrealized_pnl: float = 0.0
     unrealized_pnl_pct: float = 0.0
+
+
+class PendingOrder(BaseModel):
+    inst_id: str
+    ord_id: str = ""
+    side: str = ""
+    pos_side: str = ""
+    order_type: str = ""
+    price: float = 0.0
+    size: float = 0.0
+    filled_size: float = 0.0
+    state: str = ""
+    ts: str = ""
 
 
 class TradeRecord(BaseModel):
@@ -178,6 +203,8 @@ class ManualOrderRequest(BaseModel):
     side: PositionSide
     size_usdt: float = 50.0
     leverage: int = 3
+    order_type: str = "market"
+    price: float = 0.0
 
 
 class ConfigUpdateRequest(BaseModel):

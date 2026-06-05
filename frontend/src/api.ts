@@ -1,9 +1,14 @@
-import type { AppConfig, StatusData } from "./types";
+import type { AppConfig, StatusData, TradeRecord } from "./types";
 
 const BASE = "";
 
 export async function fetchStatus(): Promise<StatusData> {
   const res = await fetch(`${BASE}/api/status`);
+  return res.json();
+}
+
+export async function fetchTrades(): Promise<{ trades: TradeRecord[] }> {
+  const res = await fetch(`${BASE}/api/trades`);
   return res.json();
 }
 
@@ -36,7 +41,7 @@ export async function scanNow() {
 
 export async function updateConfig(
   config: AppConfig,
-): Promise<{ ok: boolean; message?: string; api_keys_configured?: boolean }> {
+): Promise<{ ok: boolean; message?: string; api_keys_configured?: boolean; config?: AppConfig }> {
   const res = await fetch(`${BASE}/api/config`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -71,12 +76,12 @@ export async function resetPositionSlTpAuto(
 
 export async function setPositionAutoSlTpDisabled(
   instId: string,
-  disabled: boolean,
+  body: { disabled?: boolean; sl_disabled?: boolean; tp_disabled?: boolean },
 ): Promise<{ ok: boolean; message?: string }> {
   const res = await fetch(`${BASE}/api/position/sl-tp/disabled`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ inst_id: instId, disabled }),
+    body: JSON.stringify({ inst_id: instId, ...body }),
   });
   return res.json();
 }
@@ -190,6 +195,8 @@ export async function manualOrder(
   side: "long" | "short",
   sizeUsdt: number,
   leverage: number,
+  orderType = "market",
+  price = 0,
 ) {
   const res = await fetch(`${BASE}/api/order/manual`, {
     method: "POST",
@@ -199,6 +206,8 @@ export async function manualOrder(
       side,
       size_usdt: sizeUsdt,
       leverage,
+      order_type: orderType,
+      price,
     }),
   });
   return res.json();

@@ -14,4 +14,4 @@ def push_activity(bot: BotState, phase: str, message: str, level: str = "info") 
         "level": level,
     }
     bot.activity_log.insert(0, entry)
-    bot.activity_log = bot.activity_log[:100]
+    bot.activity_log = bot.activity_log[:300]

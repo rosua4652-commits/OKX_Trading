@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CandleChart, type ChartLevels } from "./CandleChart";
-import { fmtNum, fmtPrice } from "./format";
+import { fmtNum, fmtPnlUsdt, fmtPrice } from "./format";
 import { slTpFromPrices } from "./format";
 import { strategyToBarLabel } from "./chartSymbols";
 import { slTpPctForStrategy } from "./strategy";
@@ -22,6 +22,17 @@ function defaultModalSize() {
   };
 }
 
+function crossedLevel(p: Position) {
+  const isShort = p.side === "short";
+  const hitTp =
+    p.take_profit > 0 &&
+    (isShort ? p.current_price <= p.take_profit : p.current_price >= p.take_profit);
+  const hitSl =
+    p.stop_loss > 0 &&
+    (isShort ? p.current_price >= p.stop_loss : p.current_price <= p.stop_loss);
+  return { hitTp, hitSl };
+}
+
 export function ChartModal({
   target,
   onClose,
@@ -39,7 +50,7 @@ export function ChartModal({
   const resizingRef = useRef(false);
 
   useEffect(() => {
-    if (target) setTab(target.position ? "oat" : "oat");
+    if (target) setTab("oat");
   }, [target?.instId]);
 
   useEffect(() => {
@@ -109,9 +120,11 @@ export function ChartModal({
     [modalSize.h, modalSize.w],
   );
 
+  const p = target?.position;
+  const crossed = useMemo(() => (p ? crossedLevel(p) : { hitTp: false, hitSl: false }), [p]);
+
   if (!target) return null;
 
-  const p = target.position;
   const chartStrat = p?.strategy_mode && p.strategy_mode !== "both"
     ? p.strategy_mode
     : target.strategy;
@@ -123,6 +136,8 @@ export function ChartModal({
           p.stop_loss,
           p.take_profit,
           p.side,
+          p.leverage && p.leverage > 0 ? p.leverage : configLeverage,
+          p.instrument_type || "swap",
         );
         return {
           entry: p.entry_price,
@@ -134,6 +149,8 @@ export function ChartModal({
           currentPrice: p.current_price,
           unrealizedPnl: p.unrealized_pnl,
           unrealizedPnlPct: p.unrealized_pnl_pct,
+          leverage: p.leverage && p.leverage > 0 ? p.leverage : configLeverage,
+          instrumentType: p.instrument_type || "swap",
           entryTime: p.opened_at,
         };
       })()
@@ -156,10 +173,12 @@ export function ChartModal({
         <div className="chart-modal-header">
           <div>
             <h2>{target.title}</h2>
-            <span className="chart-modal-sub">{target.instId} · {strategyToBarLabel(target.strategy)}</span>
+            <span className="chart-modal-sub">
+              {target.instId} · {strategyToBarLabel(target.strategy)}
+            </span>
           </div>
           <button type="button" className="chart-modal-close" onClick={onClose}>
-            ✕
+            닫기
           </button>
         </div>
 
@@ -169,14 +188,20 @@ export function ChartModal({
             <span>진입 ${fmtPrice(p.entry_price)}</span>
             <span>현재 ${fmtPrice(p.current_price)}</span>
             <span className={p.unrealized_pnl >= 0 ? "positive" : "negative"}>
-              PnL {p.unrealized_pnl >= 0 ? "+" : ""}{fmtNum(p.unrealized_pnl)} ({fmtNum(p.unrealized_pnl_pct, 1)}%)
+              PnL {p.unrealized_pnl >= 0 ? "+" : ""}{fmtPnlUsdt(p.unrealized_pnl)} USDT
+            </span>
+            <span className={p.unrealized_pnl_pct >= 0 ? "positive" : "negative"}>
+              PnL ROI {p.unrealized_pnl_pct >= 0 ? "+" : ""}{fmtNum(p.unrealized_pnl_pct, 1)}%
             </span>
             {p.instrument_type !== "spot" && (
-              <span>
-                레버 {(p.leverage && p.leverage > 0 ? p.leverage : configLeverage)}x
-              </span>
+              <span>레버 {(p.leverage && p.leverage > 0 ? p.leverage : configLeverage)}x</span>
             )}
             <span className="muted">SL ${fmtPrice(p.stop_loss)} · TP ${fmtPrice(p.take_profit)}</span>
+            {p.auto_sl_tp_disabled && (
+              <span className="chart-auto-off">
+                자동 OFF{(crossed.hitTp || crossed.hitSl) ? ` · ${crossed.hitTp ? "익절선" : "손절선"} 통과` : ""}
+              </span>
+            )}
           </div>
         )}
 
@@ -213,9 +238,9 @@ export function ChartModal({
         <div
           className="chart-modal-resize-handle"
           onPointerDown={handleResizeStart}
-          title="드래그하여 크기 조절"
+          title="드래그해서 크기 조절"
         >
-          ↘ 크기 조절
+          크기
         </div>
       </div>
     </div>

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+﻿import React, { useEffect, useRef, useState } from "react";
 import {
   CandlestickSeries,
   ColorType,
@@ -11,7 +11,7 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import { fetchCandles } from "./api";
-import { fmtNum, fmtPrice } from "./format";
+import { fmtNum, fmtPnlUsdt, fmtPrice } from "./format";
 
 export type OhlcBar = { o: number; h: number; l: number; c: number };
 export type CandlePoint = {
@@ -33,6 +33,8 @@ export type ChartLevels = {
   currentPrice?: number;
   unrealizedPnl?: number;
   unrealizedPnlPct?: number;
+  leverage?: number;
+  instrumentType?: string;
   entryTime?: string;
 };
 
@@ -261,16 +263,20 @@ export function CandleChart({
         let slPrice = levels?.stopLoss;
         let tpPrice = levels?.takeProfit;
         if ((!slPrice || slPrice <= 0) && ref > 0 && slPct != null) {
+          const lev = levels?.instrumentType === "spot" ? 1 : Math.max(1, levels?.leverage || 1);
+          const slPricePct = slPct / lev;
           slPrice =
             levels?.side === "short"
-              ? ref * (1 + slPct / 100)
-              : ref * (1 - slPct / 100);
+              ? ref * (1 + slPricePct / 100)
+              : ref * (1 - slPricePct / 100);
         }
         if ((!tpPrice || tpPrice <= 0) && ref > 0 && tpPct != null) {
+          const lev = levels?.instrumentType === "spot" ? 1 : Math.max(1, levels?.leverage || 1);
+          const tpPricePct = tpPct / lev;
           tpPrice =
             levels?.side === "short"
-              ? ref * (1 - tpPct / 100)
-              : ref * (1 + tpPct / 100);
+              ? ref * (1 - tpPricePct / 100)
+              : ref * (1 + tpPricePct / 100);
         }
 
         const labels: typeof levelLabels = {};
@@ -284,12 +290,12 @@ export function CandleChart({
           labels.current = fmtPrice(levels.currentPrice);
         }
         if (slPrice && slPrice > 0) {
-          addLevelLine(series, slPrice, "#f85149", `SL -${slPct}% ${fmtPrice(slPrice)}`, 2, 0);
-          labels.sl = `${fmtPrice(slPrice)} (-${slPct}%)`;
+          addLevelLine(series, slPrice, "#f85149", `PnL SL -${slPct}% ${fmtPrice(slPrice)}`, 2, 0);
+          labels.sl = `${fmtPrice(slPrice)} (PnL -${slPct}%)`;
         }
         if (tpPrice && tpPrice > 0) {
-          addLevelLine(series, tpPrice, "#3fb950", `TP +${tpPct}% ${fmtPrice(tpPrice)}`, 2, 0);
-          labels.tp = `${fmtPrice(tpPrice)} (+${tpPct}%)`;
+          addLevelLine(series, tpPrice, "#3fb950", `PnL TP +${tpPct}% ${fmtPrice(tpPrice)}`, 2, 0);
+          labels.tp = `${fmtPrice(tpPrice)} (PnL +${tpPct}%)`;
         }
         if (!cancelled) setLevelLabels(labels);
       })
@@ -313,6 +319,8 @@ export function CandleChart({
     levels?.side,
     levels?.slPct,
     levels?.tpPct,
+    levels?.leverage,
+    levels?.instrumentType,
     levels?.currentPrice,
     levels?.entryTime,
   ]);
@@ -324,7 +332,7 @@ export function CandleChart({
     <div className="candle-chart-wrap">
       {meta && (
         <p className="chart-sl-tp-hint">
-          손절 <strong>{meta.sl}%</strong> · 익절 <strong>{meta.tp}%</strong>
+          PnL 손절 <strong>{meta.sl}%</strong> · 익절 <strong>{meta.tp}%</strong>
           {meta.method ? <> · <span className="muted">{meta.method}</span></> : null}
           {levels?.entry != null && <> · 진입 ${fmtPrice(levels.entry)}</>}
           {pro && " · 거래량·B/S·손익선"}
@@ -340,8 +348,8 @@ export function CandleChart({
       )}
       {pro && pnl != null && (
         <div className={`chart-pnl-box ${pnl >= 0 ? "positive" : "negative"}`}>
-          <span>PnL {pnl >= 0 ? "+" : ""}{fmtNum(pnl)}</span>
-          {pnlPct != null && <span> ({fmtNum(pnlPct, 1)}%)</span>}
+          <span>PnL {pnl >= 0 ? "+" : ""}{fmtPnlUsdt(pnl)} USDT</span>
+          {pnlPct != null && <span> (ROI {fmtNum(pnlPct, 1)}%)</span>}
         </div>
       )}
       {err ? <p className="chart-err">{err}</p> : null}

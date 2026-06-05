@@ -83,7 +83,7 @@ async def _broadcast_loop() -> None:
                 _ws_clients.difference_update(dead)
             except Exception:
                 pass
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
 
 
 @asynccontextmanager
@@ -173,9 +173,10 @@ async def update_config(req: ConfigUpdateRequest):
     engine.update_config(merged)
     save_settings(engine.config)
     if engine.config.trade_mode == TradeMode.LIVE:
-        await engine._sync_live_if_needed()
+        engine._schedule_live_sync(include_fills=False)
     return {
         "ok": True,
+        "config": config_for_client(engine.config),
         "message": "설정이 저장되었습니다",
         "api_keys_configured": bool(
             engine.config.okx_api_key
@@ -241,7 +242,9 @@ class PositionSlTpRequest(BaseModel):
 
 class PositionAutoSlTpRequest(BaseModel):
     inst_id: str
-    disabled: bool
+    disabled: bool | None = None
+    sl_disabled: bool | None = None
+    tp_disabled: bool | None = None
 
 
 @api.post("/position/sl-tp")
@@ -252,7 +255,12 @@ async def set_position_sl_tp(req: PositionSlTpRequest):
 
 @api.post("/position/sl-tp/disabled")
 async def set_position_auto_sl_tp_disabled(req: PositionAutoSlTpRequest):
-    ok, msg = await engine.set_position_auto_sl_tp_disabled(req.inst_id, req.disabled)
+    ok, msg = await engine.set_position_auto_sl_tp_disabled(
+        req.inst_id,
+        req.disabled,
+        req.sl_disabled,
+        req.tp_disabled,
+    )
     return {"ok": ok, "message": msg}
 
 
@@ -318,7 +326,7 @@ async def set_trade_mode(req: TradeModeRequest):
     engine.apply_config(cfg, "거래 모드")
     engine.bind_portfolio()
     if req.mode == TradeMode.LIVE:
-        await engine._sync_live_if_needed()
+        await engine._sync_live_if_needed(include_fills=False)
     save_settings(engine.config)
     return {"ok": True, "mode": req.mode.value, "okx_flag": engine.config.okx_flag}
 
@@ -387,6 +395,8 @@ async def get_candles(inst_id: str, strategy: str = "scalp", side: str = "long")
 @api.get("/trades")
 async def get_trades():
     engine.bind_portfolio()
+    if engine.config.trade_mode == TradeMode.LIVE:
+        await engine._sync_live_if_needed(force=True, include_fills=True)
     return {"trades": [t.model_dump() for t in engine.portfolio.trades[-50:]]}
 
 

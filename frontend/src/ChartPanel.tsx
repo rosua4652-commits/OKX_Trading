@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { CandleChart, type ChartLevels } from "./CandleChart";
 import { TradingViewChart } from "./TradingViewChart";
-import { fmtPrice, fmtSlTpCell } from "./format";
+import { fmtPnlUsdt, fmtPrice, fmtSlTpCell } from "./format";
 import type { Position } from "./types";
 
 export type ChartMode = "tv" | "oat";
@@ -35,6 +35,8 @@ export function ChartPanel({
         side: position.side,
         slPct: configSl,
         tpPct: configTp,
+        leverage: position.leverage && position.leverage > 0 ? position.leverage : configLeverage,
+        instrumentType: position.instrument_type || "swap",
       }
     : levels;
 
@@ -45,6 +47,11 @@ export function ChartPanel({
         position.take_profit,
         position.side,
         position.strategy_mode,
+        position.sl_pct,
+        position.tp_pct,
+        position.sl_tp_note,
+        position.leverage && position.leverage > 0 ? position.leverage : configLeverage,
+        position.instrument_type || "swap",
       )
     : null;
 
@@ -83,7 +90,7 @@ export function ChartPanel({
           <span>현재 ${fmtPrice(position.current_price)}</span>
           <span className={position.unrealized_pnl >= 0 ? "positive" : "negative"}>
             PnL {position.unrealized_pnl >= 0 ? "+" : ""}
-            {position.unrealized_pnl.toFixed(2)} ({position.unrealized_pnl_pct.toFixed(1)}%)
+            {fmtPnlUsdt(position.unrealized_pnl)} USDT (ROI {position.unrealized_pnl_pct.toFixed(1)}%)
           </span>
           {slTp && <span>{slTp.text}</span>}
         </div>
