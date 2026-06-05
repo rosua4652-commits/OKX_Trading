@@ -68,6 +68,7 @@ class AppConfig(BaseModel):
     scale_in_min_pnl_pct: float = Field(default=3.0, ge=0.0, le=100.0)
     trend_exit_confirm_bars: int = Field(default=3, ge=1, le=6)
     backtest_interval_minutes: int = Field(default=60, ge=1, le=1440)
+    backtest_candle_limit: int = Field(default=500, ge=80, le=1000)
     paper_initial_balance: float = Field(default=10_000.0, gt=0)
     okx_api_key: str = ""
     okx_api_secret: str = ""

@@ -273,7 +273,7 @@ async def _run_job(config: AppConfig, symbols: list[str], candle_limit: int, opt
 async def start_backtest(
     config: AppConfig,
     symbols: list[str] | None = None,
-    candle_limit: int = 200,
+    candle_limit: int = 500,
     optimize: bool = True,
 ) -> tuple[bool, str]:
     global _task, _status
@@ -313,7 +313,8 @@ async def _background_loop() -> None:
                 continue
             _status.phase = "scheduled"
             _status.message = "자동 백테스트 실행"
-            await _run_job(cfg, [], settings.backtest_candle_limit, settings.backtest_optimize)
+            candle_limit = max(80, min(1000, int(cfg.backtest_candle_limit or settings.backtest_candle_limit)))
+            await _run_job(cfg, [], candle_limit, settings.backtest_optimize)
         except asyncio.CancelledError:
             raise
         except Exception as e:

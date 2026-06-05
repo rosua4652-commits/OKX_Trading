@@ -88,6 +88,7 @@ export interface AppConfig {
   scale_in_min_pnl_pct?: number;
   trend_exit_confirm_bars?: number;
   backtest_interval_minutes?: number;
+  backtest_candle_limit?: number;
   scan_symbols?: string[];
   paper_initial_balance: number;
   okx_api_key: string;

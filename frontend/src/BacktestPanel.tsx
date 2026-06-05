@@ -19,11 +19,12 @@ export function BacktestPanel({
 }) {
   const [running, setRunning] = useState(bundle?.status?.running ?? false);
   const [msg, setMsg] = useState("");
-  const [candleLimit, setCandleLimit] = useState(200);
+  const [candleLimit, setCandleLimit] = useState(config.backtest_candle_limit ?? 500);
   const [optimize, setOptimize] = useState(true);
   const intervalMin =
     bundle?.interval_minutes ?? config.backtest_interval_minutes ?? 60;
   const saveIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveCandleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const scheduleIntervalSave = useCallback(
     (minutes: number) => {
@@ -37,12 +38,31 @@ export function BacktestPanel({
     [config, onPatchConfig, onRefresh],
   );
 
+  const scheduleCandleSave = useCallback(
+    (limit: number) => {
+      const v = Math.max(80, Math.min(1000, limit || 500));
+      setCandleLimit(v);
+      onPatchConfig({ backtest_candle_limit: v });
+      if (saveCandleRef.current) clearTimeout(saveCandleRef.current);
+      saveCandleRef.current = setTimeout(async () => {
+        await updateConfig({ ...config, backtest_candle_limit: v });
+        onRefresh();
+      }, 400);
+    },
+    [config, onPatchConfig, onRefresh],
+  );
+
   useEffect(
     () => () => {
       if (saveIntervalRef.current) clearTimeout(saveIntervalRef.current);
+      if (saveCandleRef.current) clearTimeout(saveCandleRef.current);
     },
     [],
   );
+
+  useEffect(() => {
+    setCandleLimit(config.backtest_candle_limit ?? 500);
+  }, [config.backtest_candle_limit]);
 
   const result = bundle?.result ?? null;
   const status = bundle?.status;
@@ -117,9 +137,9 @@ export function BacktestPanel({
           <input
             type="number"
             min={80}
-            max={300}
+            max={1000}
             value={candleLimit}
-            onChange={(e) => setCandleLimit(Number(e.target.value))}
+            onChange={(e) => scheduleCandleSave(Number(e.target.value))}
           />
         </label>
         <label className="chk">
@@ -573,7 +593,7 @@ export function BacktestPanel({
 
       {!result && !running && (
         <p style={{ color: "#8b949e", marginTop: 16 }}>
-          OKX 캔들(최대 300봉)로 과거 시뮬레이션 후 min_score·롱/숏 진입을 추천합니다.
+          OKX 캔들(최대 1000봉)로 과거 시뮬레이션 후 min_score·롱/숏 진입을 추천합니다.
           실행 후 「추천 점수 설정 적용」으로 라이브 설정에 반영하세요.
         </p>
       )}

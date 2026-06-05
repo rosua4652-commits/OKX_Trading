@@ -402,16 +402,22 @@ async def get_trades():
 
 class BacktestRunRequest(BaseModel):
     symbols: list[str] = []
-    candle_limit: int = 200
+    candle_limit: int = 500
     optimize: bool = True
 
 
 @api.post("/backtest/run")
 async def backtest_run(req: BacktestRunRequest = BacktestRunRequest()):
+    candle_limit = max(80, min(1000, int(req.candle_limit or 500)))
+    if engine.config.backtest_candle_limit != candle_limit:
+        cfg = engine.config.model_copy(deep=True)
+        cfg.backtest_candle_limit = candle_limit
+        engine.apply_config(cfg, "백테스트 캔들")
+        save_settings(engine.config)
     ok, msg = await start_backtest(
         engine.config,
         req.symbols or None,
-        req.candle_limit,
+        candle_limit,
         req.optimize,
     )
     return {"ok": ok, "message": msg}
