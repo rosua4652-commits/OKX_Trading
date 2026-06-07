@@ -80,6 +80,12 @@ header .build {
 }
 @media (max-width: 800px) {
   .alloc-layout { grid-template-columns: 1fr; }
+  .strategy-cockpit-head { flex-direction: column; }
+  .strategy-cockpit-grid { grid-template-columns: 1fr 1fr; }
+  .strategy-tile.wide { grid-column: 1 / -1; }
+}
+@media (max-width: 520px) {
+  .strategy-cockpit-grid { grid-template-columns: 1fr; }
 }
 .alloc-chart-wrap { text-align: center; }
 .alloc-pie { width: 180px; height: 180px; display: block; margin: 0 auto; }
@@ -109,6 +115,102 @@ header .build {
 .alloc-table { width: 100%; font-size: 0.85rem; margin-top: 8px; }
 .alloc-table th { color: #8b949e; font-weight: 500; }
 .alloc-hint { font-size: 0.75rem; color: #6e7681; margin-top: 10px; }
+
+.strategy-cockpit { margin-bottom: 20px; }
+.strategy-cockpit-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+.strategy-cockpit-head h2 { margin-bottom: 4px; }
+.strategy-cockpit-head p { color: #8b949e; font-size: 0.85rem; }
+.strategy-mode-pill {
+  flex-shrink: 0;
+  border: 1px solid #30363d;
+  background: #21262d;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-weight: 700;
+  font-size: 0.82rem;
+}
+.strategy-mode-pill.running {
+  color: #3fb950;
+  border-color: #238636;
+  background: #23863622;
+}
+.strategy-mode-pill.stopped {
+  color: #8b949e;
+}
+.strategy-cockpit-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(140px, 1fr)) repeat(2, minmax(240px, 1.5fr));
+  gap: 10px;
+}
+.strategy-tile {
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  padding: 12px;
+  min-width: 0;
+}
+.strategy-tile span {
+  display: block;
+  color: #8b949e;
+  font-size: 0.78rem;
+  margin-bottom: 6px;
+}
+.strategy-tile strong {
+  display: block;
+  color: #e6edf3;
+  font-size: 1.12rem;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.strategy-tile strong em {
+  color: #6e7681;
+  font-style: normal;
+  margin: 0 8px;
+}
+.strategy-tile small {
+  display: block;
+  color: #8b949e;
+  font-size: 0.75rem;
+  margin-top: 7px;
+  line-height: 1.35;
+}
+.strategy-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.strategy-flags span {
+  border: 1px solid #30363d;
+  border-radius: 999px;
+  color: #c9d1d9;
+  background: #161b22;
+  font-size: 0.75rem;
+  padding: 5px 9px;
+}
+.strategy-latest-decision {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid #1f6feb66;
+  background: #0d419d22;
+  border-radius: 6px;
+  color: #c9d1d9;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+.strategy-latest-decision span {
+  color: #58a6ff;
+  font-weight: 700;
+  margin-right: 8px;
+}
 
 .backtest-toolbar {
   display: flex;

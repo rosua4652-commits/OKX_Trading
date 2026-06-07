@@ -1,4 +1,4 @@
-"""Backtest job runner — manual, background loop, history."""
+﻿"""Backtest job runner ??manual, background loop, history."""
 
 from __future__ import annotations
 
@@ -83,8 +83,8 @@ def load_persisted_state() -> None:
     if latest.status == "done" and latest.metrics:
         _status.progress_pct = 100.0
         _status.message = (
-            f"최근 백테스트 복구 — PnL {latest.metrics.total_pnl:+.2f} "
-            f"승률 {latest.metrics.win_rate}%"
+            f"理쒓렐 諛깊뀒?ㅽ듃 蹂듦뎄 ??PnL {latest.metrics.total_pnl:+.2f} "
+            f"?밸쪧 {latest.metrics.win_rate}%"
         )
     elif latest.error:
         _status.message = latest.error
@@ -184,7 +184,7 @@ def _save_result(result: BacktestResult) -> None:
 
 
 def interval_seconds(config: AppConfig) -> int:
-    """Saved UI setting: backtest_interval_minutes (1–1440)."""
+    """Saved UI setting: backtest_interval_minutes (1??440)."""
     mins = max(1, min(1440, int(config.backtest_interval_minutes or 60)))
     return mins * 60
 
@@ -196,12 +196,20 @@ def _strategy_bar(config: AppConfig) -> str:
     return "scalp"
 
 
-async def _fetch_candles(config: AppConfig, symbols: list[str], limit: int) -> dict[str, list]:
+async def _fetch_candles(
+    config: AppConfig,
+    symbols: list[str],
+    limit: int,
+    months: int | None = None,
+) -> dict[str, list]:
     bar_key = _strategy_bar(config)
+    months = max(3, min(6, int(months or config.backtest_period_months or 3)))
     out: dict[str, list] = {}
     for inst_id in symbols:
-        _status.message = f"캔들 로드 {inst_id}"
-        candles = await market.candles(inst_id, bar_key, limit=limit)
+        _status.message = f"캔들 로드 {inst_id} ({months}개월)"
+        candles = await market.candles_months(inst_id, bar_key, months=months)
+        if not candles:
+            candles = await market.candles(inst_id, bar_key, limit=limit)
         if candles:
             out[inst_id] = candles
     return out
@@ -214,20 +222,21 @@ async def _run_job(config: AppConfig, symbols: list[str], candle_limit: int, opt
         _status.running = True
         _status.progress_pct = 5.0
         _status.phase = "fetch"
-        _status.message = "캔들 데이터 수집"
+        _status.message = "罹붾뱾 ?곗씠???섏쭛"
 
         if not symbols:
             symbols = await top_symbols(config.instrument_type, limit=8)
         if not symbols and config.scan_symbols:
             symbols = config.scan_symbols[:8]
 
-        symbol_candles = await _fetch_candles(config, symbols, candle_limit)
+        months = max(3, min(6, int(config.backtest_period_months or 3)))
+        symbol_candles = await _fetch_candles(config, symbols, candle_limit, months)
         if not symbol_candles:
-            raise RuntimeError("캔들 데이터 없음 (API/네트워크 확인)")
+            raise RuntimeError("罹붾뱾 ?곗씠???놁쓬 (API/?ㅽ듃?뚰겕 ?뺤씤)")
 
         _status.progress_pct = 35.0
         _status.phase = "simulate"
-        _status.message = "시뮬레이션 실행"
+        _status.message = "?쒕??덉씠???ㅽ뻾"
 
         result = await asyncio.to_thread(
             build_result,
@@ -249,11 +258,11 @@ async def _run_job(config: AppConfig, symbols: list[str], candle_limit: int, opt
         rec = result.recommendation
         if rec:
             _status.message = (
-                f"완료 — score {rec.min_score} SL {rec.stop_loss_pct}% TP {rec.take_profit_pct}% "
-                f"승률 {result.metrics.win_rate}%"
+                f"?꾨즺 ??score {rec.min_score} SL {rec.stop_loss_pct}% TP {rec.take_profit_pct}% "
+                f"?밸쪧 {result.metrics.win_rate}%"
             )
         else:
-            _status.message = "완료"
+            _status.message = "?꾨즺"
         logger.info("Backtest %s done PnL=%s", result.id, result.metrics.total_pnl)
     except Exception as e:
         logger.exception("Backtest failed")
@@ -294,7 +303,7 @@ async def start_backtest(
         message="시작",
     )
     _task = asyncio.create_task(_run_job(config, sym_list, candle_limit, optimize))
-    return True, "백테스트 시작됨"
+    return True, "백테스트 시작"
 
 
 async def _background_loop() -> None:
@@ -331,7 +340,7 @@ async def _background_loop() -> None:
                     )
                     candle_limit = max(
                         300,
-                        min(1000, int(cfg.backtest_candle_limit or settings.backtest_candle_limit)),
+                        min(60000, int(cfg.backtest_candle_limit or settings.backtest_candle_limit)),
                     )
                     await _run_job(cfg, symbols, candle_limit, True)
                     mark_feedback_reviewed()
@@ -339,7 +348,7 @@ async def _background_loop() -> None:
                     continue
             _status.phase = "scheduled"
             _status.message = "자동 백테스트 실행"
-            candle_limit = max(80, min(1000, int(cfg.backtest_candle_limit or settings.backtest_candle_limit)))
+            candle_limit = max(80, min(60000, int(cfg.backtest_candle_limit or settings.backtest_candle_limit)))
             await _run_job(cfg, [], candle_limit, settings.backtest_optimize)
         except asyncio.CancelledError:
             raise
@@ -375,7 +384,7 @@ def stop_background_loop() -> None:
 def apply_recommendation(config: AppConfig) -> tuple[bool, str, dict[str, Any]]:
     latest = get_latest()
     if not latest or not latest.recommendation:
-        return False, "적용할 추천 없음 (백테스트 먼저 실행)", {}
+        return False, "?곸슜??異붿쿇 ?놁쓬 (諛깊뀒?ㅽ듃 癒쇱? ?ㅽ뻾)", {}
     rec = latest.recommendation
     changes: dict[str, Any] = {
         "min_score": rec.min_score,
@@ -386,7 +395,7 @@ def apply_recommendation(config: AppConfig) -> tuple[bool, str, dict[str, Any]]:
         changes["stop_loss_pct"] = rec.stop_loss_pct
     if rec.take_profit_pct > 0:
         changes["take_profit_pct"] = rec.take_profit_pct
-    msg = f"min_score → {rec.min_score}"
+    msg = f"min_score ??{rec.min_score}"
     if rec.stop_loss_pct > 0 and rec.take_profit_pct > 0:
         msg += f", SL {rec.stop_loss_pct}% / TP {rec.take_profit_pct}%"
-    return True, msg + " 적용", changes
+    return True, msg + " ?곸슜", changes

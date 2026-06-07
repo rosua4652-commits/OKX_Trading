@@ -1,4 +1,5 @@
-"""Core trading engine — scan, analyze, enter, exit."""
+# -*- coding: utf-8 -*-
+"""Core trading engine - scan, analyze, enter, exit."""
 
 from __future__ import annotations
 
@@ -9,6 +10,12 @@ from datetime import datetime, timezone
 from typing import Callable, Optional
 
 from app.config import settings
+from app.candle_patterns import (
+    best_three_candle_pattern,
+    detect_three_black_crows,
+    detect_three_white_soldiers,
+    signal_to_plan,
+)
 from app.contract_sizing import swap_contract_count, swap_notional_usdt
 from app.engine.activity_log import push_activity
 from app.config_changelog import format_config_changes
@@ -23,7 +30,8 @@ from app.entry_signals import resolve_entry_side
 from app.engine.risk_manager import check_entry_allowed
 from app.market.data_provider import market
 from app.market.entry_analyzer import analyze_batch
-from app.market.dynamic_sl_tp import compute_dynamic_sl_tp
+from app.market.dynamic_sl_tp import DynamicSlTpPlan, compute_dynamic_sl_tp
+from app.market.technical_indicators import indicator_snapshot
 from app.market.live_account import sync_live_portfolio
 from app.market.live_exchange import live_close, live_open
 from app.market.instrument_rules import swap_sizing_rules
@@ -98,7 +106,7 @@ class TradingEngine:
         if not is_loss_exit:
             return
         self._reentry_watchlist[inst_id] = side
-        self._log("risk", f"{inst_id} 손절 후 방향 검증 대기 (같은 방향 즉시 재진입 보류)", "warn")
+        self._log("risk", f"{inst_id} 손절 후 재진입 감시 시작 (같은 방향 재진입 시 조건 확인)", "warn")
 
     def _ema_list(self, values: list[float], period: int) -> list[float]:
         if not values:
@@ -127,7 +135,7 @@ class TradingEngine:
         strat_key = "swing" if pos.strategy_mode == StrategyMode.SWING else "scalp"
         candles = await market.candles(pos.inst_id, strat_key, limit=80)
         if len(candles) < 55:
-            return False, "캔들 부족"
+            return False, "not enough candles"
         try:
             opens = [float(c[1]) for c in candles]
             highs = [float(c[2]) for c in candles]
@@ -135,13 +143,13 @@ class TradingEngine:
             closes = [float(c[4]) for c in candles]
             volumes = [float(c[5]) if len(c) > 5 else 0.0 for c in candles]
         except (TypeError, ValueError, IndexError):
-            return False, "캔들 파싱 실패"
+            return False, "candle parse failed"
 
         ema20 = self._ema_list(closes, 20)
         ema50 = self._ema_list(closes, 50)
         hist = self._macd_hist(closes)
         if len(hist) < 4:
-            return False, "MACD 부족"
+            return False, "not enough MACD"
         vol_avg = sum(volumes[-20:]) / min(20, len(volumes))
         vol_ratio = volumes[-1] / vol_avg if vol_avg > 0 else 1.0
         body = abs(closes[-1] - opens[-1])
@@ -162,7 +170,7 @@ class TradingEngine:
             spacing_ok = last_scale <= 0 or closes[-1] <= last_scale * 0.996
             ok = trend_ok and macd_ok and candle_ok and strong_body and vol_ratio >= 1.5 and spacing_ok
 
-        reason = f"체결량 {vol_ratio:.1f}배 · EMA20/50 추세 · MACD 강화"
+        reason = f"거래량 {vol_ratio:.1f}배 · EMA20/50 추세 · MACD 강화"
         return ok, reason
 
     async def _trend_break_signal(self, pos) -> tuple[bool, str]:
@@ -211,7 +219,54 @@ class TradingEngine:
             or (candle_break and vol_ratio >= 1.1)
         )
         if pos.unrealized_pnl > 0 and reversal_ok:
-            return True, f"추세 꺾임/MACD 반전 ({confirm_bars}캔들 확인 · 거래량 {vol_ratio:.1f}배)"
+            return True, f"추세 이탈/MACD 반전 ({confirm_bars}캔들 확인 · 거래량 {vol_ratio:.1f}배)"
+        return False, ""
+
+    async def _advanced_exit_signal(self, pos) -> tuple[bool, str]:
+        if pos.auto_profit_protect_disabled:
+            return False, ""
+        strat_key = "swing" if pos.strategy_mode == StrategyMode.SWING else "scalp"
+        candles = await market.candles(pos.inst_id, strat_key, limit=90)
+        if len(candles) < 35:
+            return False, ""
+        try:
+            highs = [float(c[2]) for c in candles]
+            lows = [float(c[3]) for c in candles]
+            closes = [float(c[4]) for c in candles]
+            volumes = [float(c[5]) if len(c) > 5 else 0.0 for c in candles]
+        except (TypeError, ValueError, IndexError):
+            return False, ""
+
+        snap = indicator_snapshot(highs, lows, closes, volumes)
+        if not snap:
+            return False, ""
+        st_dir = int(snap.get("supertrend_direction", 0))
+        st_line = float(snap.get("supertrend_line", 0.0))
+        stoch_k = float(snap.get("stoch_k", 50.0))
+        stoch_d = float(snap.get("stoch_d", 50.0))
+        adx_val = float(snap.get("adx", 20.0))
+        vol_ratio = float(snap.get("vol_ratio", 1.0))
+        current = float(pos.current_price or closes[-1])
+        if current <= 0:
+            return False, ""
+
+        if pos.side == PositionSide.LONG and st_dir == -1 and current < st_line:
+            return True, f"Supertrend 하락 전환 (ADX {adx_val:.0f})"
+        if pos.side == PositionSide.SHORT and st_dir == 1 and current > st_line:
+            return True, f"Supertrend 상승 전환 (ADX {adx_val:.0f})"
+
+        if pos.unrealized_pnl <= 0:
+            return False, ""
+
+        if pos.side == PositionSide.LONG:
+            if stoch_k < stoch_d and stoch_k >= 70:
+                return True, f"이익 보호: Stoch 과열 둔화 {stoch_k:.0f}"
+        else:
+            if stoch_k > stoch_d and stoch_k <= 30:
+                return True, f"이익 보호: Stoch 과매도 반등 {stoch_k:.0f}"
+
+        if adx_val < 18 and vol_ratio < 0.8:
+            return True, f"이익 보호: ADX/거래량 약화 ({adx_val:.0f}, {vol_ratio:.1f}배)"
         return False, ""
 
     async def _reentry_confirmed(
@@ -220,6 +275,16 @@ class TradingEngine:
         side: PositionSide,
         strategy: StrategyMode,
     ) -> bool:
+        pattern_plan = await self._three_candle_pattern_plan(inst_id, side)
+        if pattern_plan:
+            self._log("risk", f"{inst_id} 재진입 확인: {pattern_plan.method}", "ok")
+            return True
+        opposite = PositionSide.SHORT if side == PositionSide.LONG else PositionSide.LONG
+        opposite_pattern = await self._three_candle_pattern_plan(inst_id, opposite)
+        if opposite_pattern:
+            self._log("risk", f"{inst_id} 재진입 차단: 반대 패턴 확인 ({opposite_pattern.method})", "warn")
+            return False
+
         strat_key = "swing" if strategy == StrategyMode.SWING else "scalp"
         candles = await market.candles(inst_id, strat_key, limit=80)
         if len(candles) < 35:
@@ -270,42 +335,38 @@ class TradingEngine:
         original_side: PositionSide,
         strategy: StrategyMode,
     ) -> PositionSide | None:
-        """
-        손절 후 방향 전환 여부를 차트로 검증한다.
-        - 방향 오류(direction_error)로 분류된 경우 반대 방향 진입 가능 여부를 확인
-        - 반대 방향 진입 조건이 충족되면 반대 PositionSide 반환, 아니면 None
-        """
+        """손절 후 방향 오류 시 반대 방향 진입 가능성 검토."""
         loss_reason = get_symbol_loss_reason(inst_id, original_side.value)
-        if loss_reason != "direction_error":
-            return None
-
         opposite_side = PositionSide.SHORT if original_side == PositionSide.LONG else PositionSide.LONG
 
-        # 숏 전환은 allow_short 설정 및 SPOT 여부 확인
+        opposite_pattern = await self._three_candle_pattern_plan(inst_id, opposite_side)
+        if loss_reason != "direction_error" and not opposite_pattern:
+            return None
+
         if opposite_side == PositionSide.SHORT:
             if not self.config.allow_short:
-                self._log("risk", f"{inst_id} 방향 오류 감지됐으나 숏 비활성화 — 재진입 보류", "warn")
+                self._log("risk", f"{inst_id} 방향 재검증: 숏 비활성화라 반대 진입 보류", "warn")
                 return None
             if self.config.instrument_type == InstrumentType.SPOT:
-                self._log("risk", f"{inst_id} 방향 오류 감지됐으나 SPOT 숏 불가 — 재진입 보류", "warn")
+                self._log("risk", f"{inst_id} 방향 재검증: SPOT은 숏 불가라 반대 진입 보류", "warn")
                 return None
 
-        # 반대 방향 차트 조건 확인
-        confirmed = await self._reentry_confirmed(inst_id, opposite_side, strategy)
-        if confirmed:
+        if opposite_pattern:
             dir_label = "숏" if opposite_side == PositionSide.SHORT else "롱"
             self._log(
                 "risk",
-                f"{inst_id} 방향 오류 확인 → 반대 방향({dir_label}) 진입 조건 충족, 전환 진입",
+                f"{inst_id} 손절 후 반대 패턴 확인 -> {dir_label} 전환 검토 ({opposite_pattern.method})",
                 "ok",
             )
             return opposite_side
 
-        self._log(
-            "risk",
-            f"{inst_id} 방향 오류 확인됐으나 반대 방향 진입 조건 미충족 — 대기",
-            "warn",
-        )
+        confirmed = await self._reentry_confirmed(inst_id, opposite_side, strategy)
+        if confirmed:
+            dir_label = "숏" if opposite_side == PositionSide.SHORT else "롱"
+            self._log("risk", f"{inst_id} 방향 오류 확인 -> 반대 방향({dir_label}) 진입 조건 충족", "ok")
+            return opposite_side
+
+        self._log("risk", f"{inst_id} 방향 재검증: 반대 방향 조건 미충족, 대기", "warn")
         return None
 
     async def _recent_loss_reentry_blocked(self, inst_id: str, side: PositionSide) -> bool:
@@ -322,51 +383,45 @@ class TradingEngine:
             if (now - ts).total_seconds() > 30 * 60:
                 return False
 
-            # 손절 원인 확인
             loss_reason = get_symbol_loss_reason(inst_id, side.value)
 
             if loss_reason == "direction_error":
-                # 방향 자체가 틀렸던 경우: 같은 방향 재진입은 차단하되 방향 전환은 별도 처리
                 self._log(
                     "risk",
-                    f"{inst_id} 이전 손절 원인: 방향 오류 — 같은 방향({side.value}) 재진입 차단, 반대 방향 검토 필요",
+                    f"{inst_id} 직전 손절 확인: 방향 오류 → 같은 방향({side.value}) 재진입 차단, 반대 방향 검토 필요",
                     "warn",
                 )
                 return True
 
             if loss_reason == "timing_error":
-                # 타이밍 오류: 추세 회복 확인 후 같은 방향 재진입 허용
                 if not await self._reentry_confirmed(inst_id, side, self.config.strategy_mode):
-                    self._log("risk", f"{inst_id} 타이밍 오류 손절 — 추세 회복 전 재진입 차단", "warn")
+                    self._log("risk", f"{inst_id} 타이밍 오류 손절 후 추세 회복 미확인 → 재진입 차단", "warn")
                     return True
                 self._log("risk", f"{inst_id} 타이밍 오류 후 추세 회복 확인, 재진입 허용", "ok")
                 return False
 
             if loss_reason == "sl_too_tight":
-                # SL이 타이트했던 경우: 진입 조건만 확인되면 재진입 허용
                 if not await self._reentry_confirmed(inst_id, side, self.config.strategy_mode):
-                    self._log("risk", f"{inst_id} SL 타이트 손절 — 진입 조건 미충족, 재진입 차단", "warn")
+                    self._log("risk", f"{inst_id} SL 너무 좁은 손절 후 진입 조건 불충분 → 재진입 차단", "warn")
                     return True
-                self._log("risk", f"{inst_id} SL 타이트 손절이었음, 조건 재확인 후 재진입 허용", "ok")
+                self._log("risk", f"{inst_id} SL 너무 좁았으나 조건 충족됨 → 재진입 허용", "ok")
                 return False
 
             if loss_reason == "sideways_entry":
-                # 횡보장 진입 오류: 추세 형성될 때까지 차단
                 if not await self._reentry_confirmed(inst_id, side, self.config.strategy_mode):
-                    self._log("risk", f"{inst_id} 횡보장 진입 손절 — 추세 형성 전 재진입 차단", "warn")
+                    self._log("risk", f"{inst_id} 횡보 진입 손절 후 추세 확인 미충족 → 재진입 차단", "warn")
                     return True
-                self._log("risk", f"{inst_id} 횡보 후 추세 형성 확인, 재진입 허용", "ok")
+                self._log("risk", f"{inst_id} 횡보 후 추세 확인 완료, 재진입 허용", "ok")
                 return False
 
-            # 원인 불명: 기존 로직(웨이브/추세 회복 확인)
             if not await self._reentry_confirmed(inst_id, side, self.config.strategy_mode):
                 self._log(
                     "risk",
-                    f"{inst_id} 최근 손절 기록 있음: 전환 캔들/추세 회복 전 재진입 차단",
+                    f"{inst_id} 최근 손절 기록 있음: 캔들/추세 회복 미확인 → 재진입 차단",
                     "warn",
                 )
                 return True
-            self._log("risk", f"{inst_id} 최근 손절 후 전환 확인, 재진입 허용", "ok")
+            self._log("risk", f"{inst_id} 최근 손절 후 캔들 확인, 재진입 허용", "ok")
             return False
         return False
 
@@ -444,7 +499,7 @@ class TradingEngine:
             self._portfolio_sync_message = ""
             return
         if not self._has_keys():
-            self._portfolio_sync_message = "실거래 API 키를 설정/저장하세요"
+            self._portfolio_sync_message = "실거래 API 키를 설정해주세요"
             return
         now = time.monotonic()
         if not force and now - self._last_live_sync < 2:
@@ -533,7 +588,7 @@ class TradingEngine:
             pass
         return out
 
-    def apply_config(self, config: AppConfig, source: str = "설정") -> None:
+    def apply_config(self, config: AppConfig, source: str = "settings") -> None:
         old = self.config.model_copy(deep=True)
         self.config = apply_strategy_defaults(config)
         changes = format_config_changes(old, self.config)
@@ -542,7 +597,7 @@ class TradingEngine:
         self._notify()
 
     def update_config(self, config: AppConfig) -> None:
-        self.apply_config(config, "설정 저장")
+        self.apply_config(config, "settings save")
 
     async def start_bot(
         self,
@@ -560,7 +615,7 @@ class TradingEngine:
         if self.bot.status.running:
             return
         self.bot.status.running = True
-        self.bot.status.message = "봇 시작"
+        self.bot.status.message = "시작 중"
         strat_label = self.config.strategy_mode.value
         if self.config.strategy_mode == StrategyMode.BOTH:
             strat_label = "단타+장타"
@@ -570,7 +625,7 @@ class TradingEngine:
 
     async def stop_bot(self) -> None:
         self.bot.status.running = False
-        self.bot.status.message = "봇 중지"
+        self.bot.status.message = "정지 중"
         if self._task:
             self._task.cancel()
             try:
@@ -578,7 +633,7 @@ class TradingEngine:
             except asyncio.CancelledError:
                 pass
             self._task = None
-        self._log("stop", "자동매매 중지")
+        self._log("stop", "자동매매 정지")
         self._notify()
 
     async def _run_loop(self) -> None:
@@ -595,7 +650,7 @@ class TradingEngine:
             await self._sync_live_if_needed()
         self.bot.status.scan_count += 1
         self.bot.status.last_scan = utc_now_iso()
-        self._log("scan", f"시장 스캔 #{self.bot.status.scan_count}")
+        self._log("scan", f"스캔 실행 #{self.bot.status.scan_count}")
 
         if self.config.auto_invest:
             await self._check_exits()
@@ -623,7 +678,7 @@ class TradingEngine:
         side_mode = self.config.position_side.value
         self._log(
             "scan",
-            f"후보 {len(analyzed)} (롱 {n_long} / 숏 {n_short}) · 진입모드={side_mode}",
+            f"후보 {len(analyzed)} (롱 {n_long} / 숏 {n_short}) · 진입방향={side_mode}",
         )
 
         if self.config.auto_invest:
@@ -646,6 +701,10 @@ class TradingEngine:
             exit_flag, reason = should_exit(pos, self.config)
             if exit_flag:
                 await self._close_position(inst_id, reason)
+                continue
+            advanced_exit, advanced_reason = await self._advanced_exit_signal(pos)
+            if advanced_exit:
+                await self._close_position(inst_id, advanced_reason)
 
     async def _scale_in_positions(self) -> None:
         if not self.config.trend_scale_in or self.config.max_scale_ins <= 0:
@@ -683,7 +742,7 @@ class TradingEngine:
         if self._is_live() and self._has_keys():
             need_cost = entry_cost_usdt(self.config, size_usdt)
             if self.portfolio.available < need_cost:
-                self._log("entry", f"추가진입 보류: 가능 ${self.portfolio.available:.2f} < 필요 ${need_cost:.2f}", "warn")
+                self._log("entry", f"추가진입 거절: 잔고 ${self.portfolio.available:.2f} < 필요 ${need_cost:.2f}", "warn")
                 return False
             ok, msg, _ = await live_open(self.config, pos.inst_id, pos.side, size_usdt)
             if not ok:
@@ -721,7 +780,7 @@ class TradingEngine:
         )
         if not updated:
             need_cost = entry_cost_usdt(self.config, notional)
-            self._log("entry", f"추가진입 보류: 가능 ${self.portfolio.available:.2f} < 필요 ${need_cost:.2f}", "warn")
+            self._log("entry", f"추가진입 거절: 잔고 ${self.portfolio.available:.2f} < 필요 ${need_cost:.2f}", "warn")
             return False
         self._log(
             "entry",
@@ -733,6 +792,27 @@ class TradingEngine:
     def _resolve_entry_side(self, cand: CoinCandidate) -> PositionSide | None:
         return resolve_entry_side(self.config, cand)
 
+    async def _three_candle_pattern_plan(self, inst_id: str, side: PositionSide) -> DynamicSlTpPlan | None:
+        try:
+            candles_5m, candles_10m, candles_1h = await asyncio.gather(
+                market.candles(inst_id, "5m", limit=80),
+                market.candles(inst_id, "10m", limit=80),
+                market.candles(inst_id, "1H", limit=80),
+            )
+        except Exception:
+            return None
+        signal = best_three_candle_pattern([
+            detect_three_white_soldiers(candles_5m, "5m", self.config.leverage, self.config.instrument_type),
+            detect_three_black_crows(candles_5m, "5m", self.config.leverage, self.config.instrument_type),
+            detect_three_white_soldiers(candles_10m, "10m", self.config.leverage, self.config.instrument_type),
+            detect_three_black_crows(candles_10m, "10m", self.config.leverage, self.config.instrument_type),
+            detect_three_white_soldiers(candles_1h, "1H", self.config.leverage, self.config.instrument_type),
+            detect_three_black_crows(candles_1h, "1H", self.config.leverage, self.config.instrument_type),
+        ])
+        if not signal or signal.side != side:
+            return None
+        return signal_to_plan(signal) if signal else None
+
     def _entry_side_reject_reason(self, cand: CoinCandidate) -> str:
         mode = self.config.position_side
         if cand.score < self.config.min_score:
@@ -741,18 +821,18 @@ class TradingEngine:
             return "롱 고정이지만 신호는 숏"
         if mode == PositionSideMode.SHORT:
             if self.config.instrument_type == InstrumentType.SPOT:
-                return "현물은 숏 불가"
+                return "SPOT은 숏 불가"
             if not self.config.allow_short:
-                return "숏 비활성"
+                return "숏 비활성화"
             if cand.trend != "down":
                 return f"숏 추세 불일치 ({cand.trend})"
             return "숏 조건 미충족"
         if "상위 하락 추세 안의 반등" in cand.reasons and cand.outlook != "short":
             return "상위 하락 추세 반등 구간이라 롱 보류"
         if cand.outlook == "long" and cand.trend not in ("strong_up", "up"):
-            return f"롱 추세 불확정 ({cand.trend})"
+            return f"롱 추세 불확실 ({cand.trend})"
         if cand.outlook == "short" and cand.trend != "down":
-            return f"숏 추세 불확정 ({cand.trend})"
+            return f"숏 추세 불확실 ({cand.trend})"
         return f"방향 조건 미충족 (판단 {cand.outlook}, 추세 {cand.trend})"
 
     def _log_candidate_decisions(self, candidates: list[CoinCandidate], limit: int = 8) -> None:
@@ -817,23 +897,20 @@ class TradingEngine:
 
             watched_side = self._reentry_watchlist.get(cand.inst_id)
             if watched_side == side:
-                # 같은 방향으로 재진입 시도 — 방향 전환 검토 먼저
                 reversed_side = await self._check_direction_reversal(
                     cand.inst_id, side, self.config.strategy_mode
                 )
                 if reversed_side is not None:
-                    # 방향 전환 진입: side를 반대로 바꾸고 watchlist에서 제거
                     self._reentry_watchlist.pop(cand.inst_id, None)
                     side = reversed_side
                 elif not await self._reentry_confirmed(cand.inst_id, side, self.config.strategy_mode):
-                    self._log("risk", f"{cand.inst_id} 손절 후 방향/추세 회복 미확인 — 재진입 보류")
+                    self._log("risk", f"{cand.inst_id} 손절 후 방향/추세 회복 미확인 - 재진입 보류")
                     continue
                 else:
                     self._reentry_watchlist.pop(cand.inst_id, None)
                     self._log("risk", f"{cand.inst_id} 추세 회복 확인, 같은 방향 재진입 허용", "ok")
 
             if await self._recent_loss_reentry_blocked(cand.inst_id, side):
-                # 방향 오류인 경우 반대 방향 전환 시도
                 loss_reason = get_symbol_loss_reason(cand.inst_id, side.value)
                 if loss_reason == "direction_error":
                     reversed_side = await self._check_direction_reversal(
@@ -868,7 +945,7 @@ class TradingEngine:
                         (
                             f"{cand.inst_id} {label} {dir_label} 진입 통과: "
                             f"점수 {cand.score:.1f}, min_score {self.config.min_score:g}, "
-                            f"주문크기 계산 후 실행"
+                            f"주문 크기 계산 후 실행"
                         ),
                         "ok",
                     )
@@ -876,6 +953,9 @@ class TradingEngine:
                     f"AI {label} {dir_label} | score={cand.score} | "
                     f"{', '.join(cand.reasons[:3])}"
                 )
+                pattern_plan = await self._three_candle_pattern_plan(cand.inst_id, side)
+                if pattern_plan:
+                    reason = f"{reason} | {pattern_plan.method}"
                 success = await self._open_position(
                     cand.inst_id,
                     side,
@@ -883,13 +963,14 @@ class TradingEngine:
                     reason,
                     cand.score,
                     strategy_mode=strat,
+                    sl_tp_plan=pattern_plan,
                 )
                 if success:
                     entered = True
                     snap = self.portfolio.snapshot()
                     break
                 if detail:
-                    self._log("decision", f"{cand.inst_id} 주문 실행 실패: 주문/잔고/거래소 조건 확인", "warn")
+                    self._log("decision", f"{cand.inst_id} 주문 실행 실패: 잔고/레버리지/거래량 조건 확인", "warn")
 
             if entered and len(snap.positions) >= self.config.max_positions:
                 break
@@ -904,6 +985,7 @@ class TradingEngine:
         strategy_mode: StrategyMode | None = None,
         order_type: str = "market",
         limit_price: float = 0.0,
+        sl_tp_plan: DynamicSlTpPlan | None = None,
     ) -> bool:
         snap = self.portfolio.snapshot()
         size_usdt = resolve_order_size_usdt(
@@ -917,10 +999,10 @@ class TradingEngine:
         self._log(
             "decision",
             (
-                f"{inst_id} 주문 준비: mode={self.config.trade_mode.value} · "
+                f"{inst_id} 주문 시도: mode={self.config.trade_mode.value} · "
                 f"방향={side.value} · 명목 ${size_usdt:,.2f} · "
-                f"필요증거금+수수료 ${need_cost_preview:,.2f} · "
-                f"가용 ${self.portfolio.available:,.2f} · 레버 {self.config.leverage}x"
+                f"필요증거금(예상) ${need_cost_preview:,.2f} · "
+                f"잔고 ${self.portfolio.available:,.2f} · 레버리지 {self.config.leverage}x"
             ),
         )
 
@@ -936,7 +1018,7 @@ class TradingEngine:
             if self.portfolio.available < need_cost:
                 self._log(
                     "decision",
-                    f"{inst_id} 실거래 진입 거절: 가용 ${self.portfolio.available:.2f} < 필요 ${need_cost:.2f}",
+                    f"{inst_id} 실거래 진입 거절: 잔고 ${self.portfolio.available:.2f} < 필요 ${need_cost:.2f}",
                     "warn",
                 )
                 return False
@@ -959,6 +1041,13 @@ class TradingEngine:
             else:
                 self._log("order", f"실거래 진입: {inst_id} {side.value} @ {price}", "ok")
                 self._log("entry", f"진입 {inst_id} {side.value} (OKX 동기화)", "ok")
+            if sl_tp_plan:
+                self.portfolio.apply_sl_tp_plan(inst_id, sl_tp_plan)
+                self._log(
+                    "entry",
+                    f"{inst_id} 패턴 SL/TP 적용 | SL {sl_tp_plan.sl_pct}% TP {sl_tp_plan.tp_pct}% ({sl_tp_plan.method})",
+                    "ok",
+                )
             return True
 
         if self.config.instrument_type == InstrumentType.SPOT:
@@ -978,7 +1067,7 @@ class TradingEngine:
         strat = strategy_mode or self.config.strategy_mode
         if strat == StrategyMode.BOTH:
             strat = StrategyMode.SCALP
-        plan = await compute_dynamic_sl_tp(inst_id, price, side, strat, self.config)
+        plan = sl_tp_plan or await compute_dynamic_sl_tp(inst_id, price, side, strat, self.config)
         full_reason = f"{reason} | SL {plan.sl_pct}% TP {plan.tp_pct}% ({plan.method})"
 
         pos = self.portfolio.open_position(
@@ -1008,7 +1097,7 @@ class TradingEngine:
         need_cost = entry_cost_usdt(self.config, notional)
         self._log(
             "decision",
-            f"{inst_id} 모의 진입 거절: 가용 ${self.portfolio.available:,.2f} < 필요 ${need_cost:,.2f}",
+            f"{inst_id} 잔고 부족 진입 거절: 잔고 ${self.portfolio.available:,.2f} < 필요 ${need_cost:,.2f}",
             "warn",
         )
         return False
@@ -1110,7 +1199,7 @@ class TradingEngine:
             side = pos.side.value if pos else ""
             self._log(
                 "config",
-                f"[수동 SL/TP] {inst_id} {side} 손절 {sl_pct}% / 익절 {tp_pct}% (가격 도달 시 자동 청산)",
+                f"[수동 SL/TP] {inst_id} {side} 손절 {sl_pct}% / 익절 {tp_pct}% (가격 변환 후 자동 청산)",
                 "ok",
             )
             self._notify()
@@ -1142,7 +1231,7 @@ class TradingEngine:
         self.portfolio.save()
         self._log(
             "config",
-            f"[포지션 손익절] {inst_id} 손절 {'OFF' if pos.auto_sl_disabled else 'ON'} / "
+            f"[포지션 설정] {inst_id} 손절 {'OFF' if pos.auto_sl_disabled else 'ON'} / "
             f"익절 {'OFF' if pos.auto_tp_disabled else 'ON'}",
             "ok",
         )

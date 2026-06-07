@@ -93,6 +93,7 @@ export interface AppConfig {
   trend_exit_confirm_bars?: number;
   backtest_interval_minutes?: number;
   backtest_candle_limit?: number;
+  backtest_period_months?: number;
   scan_symbols?: string[];
   paper_initial_balance: number;
   okx_api_key: string;

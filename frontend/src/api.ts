@@ -89,6 +89,7 @@ export async function setPositionAutoSlTpDisabled(
 export async function runBacktest(body: {
   symbols?: string[];
   candle_limit?: number;
+  months?: number;
   optimize?: boolean;
 }): Promise<{ ok: boolean; message?: string }> {
   const res = await fetch(`${BASE}/api/backtest/run`, {

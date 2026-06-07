@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import numpy as np
 
+from app.candle_patterns import (
+    best_three_candle_pattern,
+    detect_three_black_crows,
+    detect_three_white_soldiers,
+)
 from app.market.data_provider import market
 from app.market.scanner import _volume_usdt
+from app.market.technical_indicators import indicator_snapshot
 from app.models import CoinCandidate, StrategyMode
 
 
@@ -50,6 +56,8 @@ def _analyze_closes(
     closes: np.ndarray,
     volumes: np.ndarray,
     strategy: StrategyMode,
+    highs: np.ndarray | None = None,
+    lows: np.ndarray | None = None,
 ) -> tuple[float, bool, bool, str, list[str], float, str, bool, bool]:
     reasons: list[str] = []
     score = 0.0
@@ -141,6 +149,78 @@ def _analyze_closes(
             score += 10
             reasons.append("거래량 증가")
 
+    if highs is not None and lows is not None and len(highs) >= 30 and len(lows) >= 30:
+        snap = indicator_snapshot(highs, lows, closes, volumes)
+        adx_val = float(snap.get("adx", 20.0))
+        plus_di = float(snap.get("plus_di", 0.0))
+        minus_di = float(snap.get("minus_di", 0.0))
+        st_dir = int(snap.get("supertrend_direction", 0))
+        stoch_k = float(snap.get("stoch_k", 50.0))
+        stoch_d = float(snap.get("stoch_d", 50.0))
+        bb_pos = float(snap.get("bb_pos", 0.5))
+        vol_ratio = float(snap.get("vol_ratio", 1.0))
+        atr_pct = float(snap.get("atr_pct", 0.0))
+
+        if adx_val < 16:
+            score *= 0.65
+            reasons.append(f"ADX {adx_val:.0f} 약한 추세")
+        elif adx_val < 20:
+            score *= 0.85
+            reasons.append(f"ADX {adx_val:.0f} 추세 확인 대기")
+        elif adx_val >= 25:
+            score += 6
+            reasons.append(f"ADX {adx_val:.0f} 추세 강도")
+
+        if st_dir == 1 and plus_di >= minus_di:
+            if trend in ("strong_up", "up"):
+                score += 10
+                reasons.append("Supertrend 롱 일치")
+            elif trend == "down":
+                score -= 8
+                reasons.append("Supertrend 롱/EMA 하락 충돌")
+        elif st_dir == -1 and minus_di >= plus_di:
+            if trend == "down" or macd_trend == "bearish":
+                score += 8
+                reasons.append("Supertrend 숏 일치")
+            else:
+                score -= 12
+                reasons.append("Supertrend 하락 경고")
+
+        if stoch_k > stoch_d and 18 <= stoch_k <= 55:
+            score += 5
+            reasons.append(f"Stoch 반등 {stoch_k:.0f}")
+        elif stoch_k < stoch_d and 45 <= stoch_k <= 82:
+            if trend == "down" or macd_trend == "bearish":
+                score += 5
+                reasons.append(f"Stoch 하락 전환 {stoch_k:.0f}")
+            elif trend in ("strong_up", "up"):
+                score -= 4
+                reasons.append(f"Stoch 과열 둔화 {stoch_k:.0f}")
+        if stoch_k > 88 and trend in ("strong_up", "up"):
+            score -= 6
+            reasons.append("Stoch 과열권")
+        if stoch_k < 12 and trend == "down":
+            score -= 5
+            reasons.append("Stoch 과매도 숏 추격 주의")
+
+        if vol_ratio < 0.7:
+            score *= 0.78
+            reasons.append(f"거래량 약함 {vol_ratio:.1f}배")
+        elif vol_ratio >= 1.2:
+            score += 5
+            reasons.append(f"거래량 확인 {vol_ratio:.1f}배")
+
+        if bb_pos <= 0.18 and stoch_k > stoch_d and trend != "down":
+            score += 4
+            reasons.append("볼린저 하단 반등")
+        elif bb_pos >= 0.82 and stoch_k < stoch_d and (trend == "down" or macd_trend == "bearish"):
+            score += 4
+            reasons.append("볼린저 상단 저항")
+
+        if 0 < atr_pct < 0.08:
+            score *= 0.9
+            reasons.append("ATR 변동성 낮음")
+
     if macro_down and trend in ("strong_up", "up"):
         score -= 22
         if trend == "strong_up":
@@ -201,6 +281,8 @@ async def analyze_entry(
     if len(candles) < 30:
         return None
 
+    highs = np.array([float(c[2]) for c in candles])
+    lows = np.array([float(c[3]) for c in candles])
     closes = np.array([float(c[4]) for c in candles])
     volumes = np.array([float(c[5]) for c in candles])
     ticker = await market.ticker(inst_id)
@@ -227,8 +309,46 @@ async def analyze_entry(
             continue
 
     score, scalp_ok, swing_ok, outlook, reasons, rsi, trend, short_scalp_ok, short_swing_ok = (
-        _analyze_closes(closes, volumes, strategy)
+        _analyze_closes(closes, volumes, strategy, highs, lows)
     )
+
+    higher_signals = []
+    try:
+        candles_10m = await market.candles(inst_id, "10m", limit=80)
+        candles_1h = await market.candles(inst_id, "1H", limit=80)
+        higher_signals = [
+            detect_three_white_soldiers(candles, "5m", 1),
+            detect_three_black_crows(candles, "5m", 1),
+            detect_three_white_soldiers(candles_10m, "10m", 1),
+            detect_three_black_crows(candles_10m, "10m", 1),
+            detect_three_white_soldiers(candles_1h, "1H", 1),
+            detect_three_black_crows(candles_1h, "1H", 1),
+        ]
+    except Exception:
+        higher_signals = [
+            detect_three_white_soldiers(candles, "5m", 1),
+            detect_three_black_crows(candles, "5m", 1),
+        ]
+    three_pattern = best_three_candle_pattern(higher_signals)
+    if three_pattern:
+        score += three_pattern.score_bonus
+        reasons.append(three_pattern.reason)
+        if three_pattern.side.value == "long":
+            outlook = "long"
+            if trend != "strong_up":
+                trend = "up"
+            if three_pattern.interval == "1H":
+                swing_ok = True
+            elif three_pattern.interval == "10m":
+                scalp_ok = True
+                swing_ok = swing_ok or score >= 55
+            else:
+                scalp_ok = scalp_ok or score >= 55
+        else:
+            outlook = "short"
+            trend = "down"
+            short_scalp_ok = True
+            short_swing_ok = three_pattern.interval == "1H" or score >= 55
 
     if change < -4 and rsi >= 48:
         outlook = "short"

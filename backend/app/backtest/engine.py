@@ -7,11 +7,13 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from app.candle_patterns import backtest_three_soldiers_signal
 from app.config import settings
 from app.entry_signals import resolve_entry_side
 from app.engine.exit_rules import should_exit
 from app.engine.risk_manager import check_entry_allowed
 from app.market.entry_analyzer import _analyze_closes
+from app.market.technical_indicators import indicator_snapshot
 from app.models import (
     AppConfig,
     CoinCandidate,
@@ -82,10 +84,12 @@ class _SimState:
     equity_curve: list[float] = field(default_factory=list)
 
 
-def _candles_to_arrays(candles: list[list]) -> tuple[np.ndarray, np.ndarray]:
+def _candles_to_arrays(candles: list[list]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    highs = np.array([float(c[2]) for c in candles])
+    lows = np.array([float(c[3]) for c in candles])
     closes = np.array([float(c[4]) for c in candles])
     volumes = np.array([float(c[5]) for c in candles])
-    return closes, volumes
+    return highs, lows, closes, volumes
 
 
 def _change_pct(closes: np.ndarray, idx: int, lookback: int = 48) -> float:
@@ -100,15 +104,19 @@ def _change_pct(closes: np.ndarray, idx: int, lookback: int = 48) -> float:
 
 def _build_candidate(
     inst_id: str,
+    highs: np.ndarray,
+    lows: np.ndarray,
     closes: np.ndarray,
     volumes: np.ndarray,
     idx: int,
     strategy: StrategyMode,
 ) -> CoinCandidate:
+    window_h = highs[: idx + 1]
+    window_l = lows[: idx + 1]
     window_c = closes[: idx + 1]
     window_v = volumes[: idx + 1]
     score, scalp_ok, swing_ok, outlook, reasons, rsi, trend, short_scalp, short_swing = (
-        _analyze_closes(window_c, window_v, strategy)
+        _analyze_closes(window_c, window_v, strategy, window_h, window_l)
     )
     change = _change_pct(closes, idx)
     if change < -4 and rsi >= 48:
@@ -341,6 +349,51 @@ def _trend_break_signal_bt(
     return False, ""
 
 
+def _advanced_exit_signal_bt(
+    sim: _SimPos,
+    candles: list[list],
+    idx: int,
+    cfg: AppConfig,
+) -> tuple[bool, str]:
+    if idx < 35:
+        return False, ""
+    window = candles[: idx + 1]
+    if len(window) < 35:
+        return False, ""
+    try:
+        highs = [float(c[2]) for c in window[-90:]]
+        lows = [float(c[3]) for c in window[-90:]]
+        closes = [float(c[4]) for c in window[-90:]]
+        volumes = [float(c[5]) if len(c) > 5 else 0.0 for c in window[-90:]]
+    except (TypeError, ValueError, IndexError):
+        return False, ""
+    snap = indicator_snapshot(highs, lows, closes, volumes)
+    if not snap:
+        return False, ""
+    pos = _to_position(sim, float(closes[-1]), cfg)
+    st_dir = int(snap.get("supertrend_direction", 0))
+    st_line = float(snap.get("supertrend_line", 0.0))
+    stoch_k = float(snap.get("stoch_k", 50.0))
+    stoch_d = float(snap.get("stoch_d", 50.0))
+    adx_val = float(snap.get("adx", 20.0))
+    vol_ratio = float(snap.get("vol_ratio", 1.0))
+    current = float(closes[-1])
+
+    if sim.side == PositionSide.LONG and st_dir == -1 and current < st_line:
+        return True, f"Supertrend 하락 전환 (ADX {adx_val:.0f})"
+    if sim.side == PositionSide.SHORT and st_dir == 1 and current > st_line:
+        return True, f"Supertrend 상승 전환 (ADX {adx_val:.0f})"
+    if pos.unrealized_pnl <= 0:
+        return False, ""
+    if sim.side == PositionSide.LONG and stoch_k < stoch_d and stoch_k >= 70:
+        return True, f"이익 보호: Stoch 과열 둔화 {stoch_k:.0f}"
+    if sim.side == PositionSide.SHORT and stoch_k > stoch_d and stoch_k <= 30:
+        return True, f"이익 보호: Stoch 과매도 반등 {stoch_k:.0f}"
+    if adx_val < 18 and vol_ratio < 0.8:
+        return True, f"이익 보호: ADX/거래량 약화 ({adx_val:.0f}, {vol_ratio:.1f}배)"
+    return False, ""
+
+
 def _trend_scale_signal_bt(
     sim: _SimPos,
     candles: list[list],
@@ -397,7 +450,7 @@ def simulate_symbol(
         logs.append(BacktestLogEntry(ts=_utc_now(), level="warn", message=f"{inst_id}: 캔들 부족"))
         return 0
 
-    closes, volumes = _candles_to_arrays(candles)
+    highs, lows, closes, volumes = _candles_to_arrays(candles)
     cfg = config.model_copy(deep=True)
     if min_score_override is not None:
         cfg.min_score = min_score_override
@@ -405,6 +458,7 @@ def simulate_symbol(
     strat_list = active_strategies(cfg)
     if not strat_list:
         strat_list = [StrategyMode.SCALP]
+    base_interval = "1H" if StrategyMode.SWING in strat_list and StrategyMode.SCALP not in strat_list else "5m"
 
     bar_count = 0
     for i in range(60, len(closes)):
@@ -424,6 +478,11 @@ def simulate_symbol(
             exit_flag, reason = should_exit(pos, cfg)
             if exit_flag:
                 _record_close(sim, inst_id, price, i, state, logs, reason, cfg.leverage)
+                del state.positions[iid]
+                continue
+            advanced_exit, advanced_reason = _advanced_exit_signal_bt(sim, candles, i, cfg)
+            if advanced_exit:
+                _record_close(sim, inst_id, price, i, state, logs, advanced_reason, cfg.leverage)
                 del state.positions[iid]
 
         if inst_id in state.positions:
@@ -470,7 +529,32 @@ def simulate_symbol(
             continue
 
         for strat in strat_list:
-            cand = _build_candidate(inst_id, closes, volumes, i, strat)
+            cand = _build_candidate(inst_id, highs, lows, closes, volumes, i, strat)
+            three_pattern = backtest_three_soldiers_signal(
+                candles,
+                i,
+                base_interval,
+                cfg.leverage,
+                cfg.instrument_type,
+            )
+            if three_pattern:
+                cand.score = round(cand.score + three_pattern.score_bonus, 1)
+                cand.reasons.append(three_pattern.reason)
+                if three_pattern.side == PositionSide.LONG:
+                    cand.outlook = "long"
+                    cand.trend = "up" if cand.trend != "strong_up" else cand.trend
+                    if three_pattern.interval == "1H":
+                        cand.swing_ok = True
+                    elif three_pattern.interval == "10m":
+                        cand.scalp_ok = True
+                        cand.swing_ok = cand.swing_ok or cand.score >= 55
+                    else:
+                        cand.scalp_ok = cand.scalp_ok or cand.score >= 55
+                else:
+                    cand.outlook = "short"
+                    cand.trend = "down"
+                    cand.short_scalp_ok = True
+                    cand.short_swing_ok = three_pattern.interval == "1H" or cand.score >= 55
             side = resolve_entry_side(cfg, cand)
             if invert_signals:
                 side = _flip_side(side)
@@ -481,8 +565,12 @@ def simulate_symbol(
             if not ok:
                 continue
 
-            sl_pct, tp_pct = sl_tp_pcts(cfg, strat)
-            sl, tp = _sl_tp_prices(price, side, sl_pct, tp_pct, cfg.leverage)
+            if three_pattern and side == three_pattern.side and not invert_signals:
+                sl_pct, tp_pct = three_pattern.sl_pct, three_pattern.tp_pct
+                sl, tp = three_pattern.stop_loss, three_pattern.take_profit
+            else:
+                sl_pct, tp_pct = sl_tp_pcts(cfg, strat)
+                sl, tp = _sl_tp_prices(price, side, sl_pct, tp_pct, cfg.leverage)
             notional = resolve_order_size_usdt(cfg, snap, open_positions=len(state.positions))
             lev = max(1, cfg.leverage)
             margin = notional / lev
@@ -510,6 +598,7 @@ def simulate_symbol(
                         f"{inst_id} 진입 {side.value} bar={i} score={cand.score:.0f} "
                         f"명목 ${notional:,.0f} · 증거금 ${margin:,.0f} ({lev}x) "
                         f"SL{sl_pct}% TP{tp_pct}%"
+                        + (f" · {three_pattern.reason}" if three_pattern and side == three_pattern.side else "")
                     ),
                 )
             )

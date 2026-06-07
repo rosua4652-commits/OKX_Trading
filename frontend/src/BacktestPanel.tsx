@@ -2,7 +2,310 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { applyBacktest, fetchBacktestStatus, runBacktest, updateConfig } from "./api";
 import { BacktestCandlesGrid, TradeMiniCandle } from "./BacktestCandles";
 import { fmtNum, fmtPrice, fmtUsd } from "./format";
-import type { AppConfig, BacktestBundle, BacktestHistoryEntry, SymbolSlTpProfile } from "./types";
+import type {
+  AppConfig,
+  BacktestBundle,
+  BacktestHistoryEntry,
+  BacktestResult,
+  SymbolSlTpProfile,
+} from "./types";
+
+function calcCandleLimit(months: number, strategyMode: string): number {
+  const days = months * 30;
+  return strategyMode === "swing" ? days * 24 : days * 288;
+}
+
+function candleDesc(limit: number, strategyMode: string): string {
+  if (!limit) return "";
+  const minutesPerCandle = strategyMode === "swing" ? 60 : 5;
+  const totalHours = (limit * minutesPerCandle) / 60;
+  if (totalHours < 48) return `≈ ${Math.round(totalHours)}시간`;
+  const days = Math.round(totalHours / 24);
+  if (days < 30) return `≈ ${days}일`;
+  return `≈ ${(days / 30).toFixed(1)}개월`;
+}
+
+type NumberInput = number | "";
+
+type Props = {
+  config: AppConfig;
+  bundle?: BacktestBundle;
+  onRefresh: () => Promise<void> | void;
+  onConfigApplied?: (config: AppConfig) => void;
+  onPatchConfig?: (patch: Partial<AppConfig>) => void;
+};
+
+const toNumberInput = (value: unknown, fallback: number): NumberInput => {
+  if (value === "") return "";
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+};
+
+const fmtPct = (value?: number) =>
+  typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(2)}%` : "-";
+
+const fmtSide = (side?: string) => {
+  const s = String(side ?? "").toLowerCase();
+  if (s.includes("short")) return "SHORT";
+  if (s.includes("long")) return "LONG";
+  return side || "-";
+};
+
+function MetricsCards({ result }: { result: BacktestResult | null }) {
+  const m = result?.metrics;
+  const z = result?.zone_walkforward;
+  return (
+    <div className="grid backtest-summary">
+      <div className="card">
+        <h3>순손익</h3>
+        <p className={(m?.total_pnl ?? 0) >= 0 ? "green" : "red"}>{fmtUsd(m?.total_pnl ?? 0)}</p>
+        <div className="sub">ROI {fmtPct(m?.total_pnl_pct)} · 수수료 {fmtUsd(m?.total_fees_usdt ?? 0)}</div>
+      </div>
+      <div className="card">
+        <h3>승률 / 거래</h3>
+        <p>{fmtPct(m?.win_rate)}</p>
+        <div className="sub">{m?.trade_count ?? 0}건 · 롱 {m?.long_trades ?? 0} / 숏 {m?.short_trades ?? 0}</div>
+      </div>
+      <div className="card">
+        <h3>MDD</h3>
+        <p className="red">{fmtPct(m?.max_drawdown_pct)}</p>
+        <div className="sub">평균 진입 점수 {fmtNum(m?.avg_score_entries ?? 0, 1)}</div>
+      </div>
+      <div className="card">
+        <h3>ATR 검증</h3>
+        <p>{fmtPct(z?.accuracy_pct)}</p>
+        <div className="sub">Forward {fmtNum(z?.avg_forward_r ?? 0, 2)}R · 샘플 {z?.samples ?? 0}</div>
+      </div>
+    </div>
+  );
+}
+
+function Recommendation({ result }: { result: BacktestResult | null }) {
+  const rec = result?.recommendation;
+  if (!rec) return null;
+  return (
+    <div className="section">
+      <h2>추천 설정</h2>
+      <div className="bt-auto-hint">
+        min_score {rec.min_score} · 방향 {rec.direction ?? "auto"} · SL {fmtPct(rec.stop_loss_pct)} / TP{" "}
+        {fmtPct(rec.take_profit_pct)}
+      </div>
+      <p className="bt-note">{rec.reason}</p>
+      {rec.sl_tp_reason && <p className="bt-note">{rec.sl_tp_reason}</p>}
+      {!!rec.trials?.length && (
+        <div className="bt-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>min_score</th>
+                <th>순손익</th>
+                <th>승률</th>
+                <th>거래</th>
+                <th>롱/숏</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rec.trials.slice(0, 8).map((t) => (
+                <tr key={`${t.min_score}-${t.total_pnl}-${t.trades}`}>
+                  <td>{t.min_score}</td>
+                  <td className={t.total_pnl >= 0 ? "green" : "red"}>{fmtUsd(t.total_pnl)}</td>
+                  <td>{fmtPct(t.win_rate)}</td>
+                  <td>{t.trades}</td>
+                  <td>
+                    {t.long_entries}/{t.short_entries}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SymbolProfiles({ profiles }: { profiles?: SymbolSlTpProfile[] }) {
+  if (!profiles?.length) return null;
+  return (
+    <div className="section">
+      <h2>종목별 SL/TP 프로필</h2>
+      <div className="bt-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>종목</th>
+              <th>SL</th>
+              <th>TP</th>
+              <th>승률</th>
+              <th>거래</th>
+              <th>TP/SL</th>
+            </tr>
+          </thead>
+          <tbody>
+            {profiles.slice(0, 20).map((p) => (
+              <tr key={p.inst_id}>
+                <td>{p.inst_id}</td>
+                <td>{fmtPct(p.stop_loss_pct)}</td>
+                <td>{fmtPct(p.take_profit_pct)}</td>
+                <td>{fmtPct(p.win_rate)}</td>
+                <td>{p.trades}</td>
+                <td>
+                  {p.tp_hits ?? 0}/{p.sl_hits ?? 0}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function TradesTable({ result }: { result: BacktestResult | null }) {
+  const trades = result?.trades ?? [];
+  if (!trades.length) return null;
+  return (
+    <div className="section">
+      <h2>최근 백테스트 거래</h2>
+      <div className="bt-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>종목</th>
+              <th>방향</th>
+              <th>전략</th>
+              <th>진입</th>
+              <th>청산</th>
+              <th>PnL</th>
+              <th>사유</th>
+              <th>캔들</th>
+            </tr>
+          </thead>
+          <tbody>
+            {trades.slice(-30).reverse().map((t, idx) => (
+              <tr key={`${t.inst_id}-${t.entry_bar}-${t.exit_bar}-${idx}`}>
+                <td>{t.inst_id}</td>
+                <td>
+                  <span className={`badge ${fmtSide(t.side).toLowerCase()}`}>{fmtSide(t.side)}</span>
+                </td>
+                <td>{t.strategy}</td>
+                <td>{fmtPrice(t.entry_price)}</td>
+                <td>{fmtPrice(t.exit_price)}</td>
+                <td className={t.pnl_usdt >= 0 ? "green" : "red"}>
+                  {fmtUsd(t.pnl_usdt)} ({fmtPct(t.pnl_pct)})
+                </td>
+                <td>{t.exit_reason}</td>
+                <td>
+                  <TradeMiniCandle
+                    instId={t.inst_id}
+                    entryBar={t.entry_bar}
+                    exitBar={t.exit_bar}
+                    charts={result?.symbol_charts}
+                  />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function ZoneWalkForward({ result }: { result: BacktestResult | null }) {
+  const z = result?.zone_walkforward;
+  if (!z?.details?.length) return null;
+  return (
+    <div className="section">
+      <h2>ATR 구조 구간 예측 검증</h2>
+      <div className="grid">
+        <div className="card">
+          <h3>구간 정확도</h3>
+          <p>{fmtPct(z.accuracy_pct)}</p>
+          <div className="sub">롱 {fmtPct(z.long_accuracy_pct)} / 숏 {fmtPct(z.short_accuracy_pct)}</div>
+        </div>
+        <div className="card">
+          <h3>평균 Forward R</h3>
+          <p className={z.avg_forward_r >= 0 ? "green" : "red"}>{fmtNum(z.avg_forward_r, 2)}R</p>
+          <div className="sub">실패 돌파 {fmtPct(z.false_break_pct)}</div>
+        </div>
+      </div>
+      <div className="bt-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>종목</th>
+              <th>방향</th>
+              <th>근거</th>
+              <th>ATR%</th>
+              <th>박스폭</th>
+              <th>결과</th>
+              <th>Forward R</th>
+            </tr>
+          </thead>
+          <tbody>
+            {z.details.slice(0, 20).map((d, idx) => (
+              <tr key={`${d.inst_id}-${d.bar}-${idx}`}>
+                <td>{d.inst_id}</td>
+                <td>{fmtSide(d.direction)}</td>
+                <td>{d.reason}</td>
+                <td>{fmtPct(d.atr_pct)}</td>
+                <td>{fmtNum(d.width_atr, 2)} ATR</td>
+                <td>{d.hit ? "적중" : d.false_break ? "실패돌파" : "미확정"}</td>
+                <td>{fmtNum(d.forward_r, 2)}R</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function HistoryTable({ history }: { history?: BacktestHistoryEntry[] }) {
+  if (!history?.length) return null;
+  return (
+    <div className="section">
+      <h2>누적 백테스트 기록</h2>
+      <div className="bt-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>시각</th>
+              <th>상태</th>
+              <th>종목</th>
+              <th>순손익</th>
+              <th>승률</th>
+              <th>거래</th>
+              <th>추천</th>
+            </tr>
+          </thead>
+          <tbody>
+            {history.slice(0, 30).map((h) => (
+              <tr key={h.id}>
+                <td>{h.finished_at}</td>
+                <td>{h.status}</td>
+                <td>{h.symbols?.slice(0, 4).join(", ")}</td>
+                <td className={(h.metrics?.total_pnl ?? 0) >= 0 ? "green" : "red"}>
+                  {fmtUsd(h.metrics?.total_pnl ?? 0)}
+                </td>
+                <td>{fmtPct(h.metrics?.win_rate)}</td>
+                <td>{h.trade_count}</td>
+                <td>
+                  {h.recommendation
+                    ? `${h.recommendation.min_score} · SL ${fmtPct(h.recommendation.stop_loss_pct)} / TP ${fmtPct(
+                        h.recommendation.take_profit_pct,
+                      )}`
+                    : "-"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
 
 export function BacktestPanel({
   config,
@@ -10,727 +313,236 @@ export function BacktestPanel({
   onRefresh,
   onConfigApplied,
   onPatchConfig,
-}: {
-  config: AppConfig;
-  bundle: BacktestBundle | null | undefined;
-  onRefresh: () => void;
-  onConfigApplied: (minScore: number) => void;
-  onPatchConfig: (patch: Partial<AppConfig>) => void;
-}) {
-  const [running, setRunning] = useState(bundle?.status?.running ?? false);
-  const [msg, setMsg] = useState("");
-  const [candleLimit, setCandleLimit] = useState(config.backtest_candle_limit ?? 500);
-  const [optimize, setOptimize] = useState(true);
-  const intervalMin =
-    bundle?.interval_minutes ?? config.backtest_interval_minutes ?? 60;
-  const saveIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const saveCandleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // 패널 깜빡임 방지: 마지막으로 알려진 symbol_profiles를 보존
-  const stableProfilesRef = useRef<SymbolSlTpProfile[]>(bundle?.symbol_profiles ?? []);
-  if ((bundle?.symbol_profiles?.length ?? 0) > 0) {
-    stableProfilesRef.current = bundle!.symbol_profiles!;
-  }
-  const stableProfiles = stableProfilesRef.current;
-
-  // 자동 설정 반영 내역도 동일하게 안정화
-  const stableAutoHistRef = useRef<NonNullable<BacktestBundle["auto_apply_history"]>>(bundle?.auto_apply_history ?? []);
-  if ((bundle?.auto_apply_history?.length ?? 0) > 0) {
-    stableAutoHistRef.current = bundle!.auto_apply_history!;
-  }
-  const stableAutoHist = stableAutoHistRef.current;
-
-  // 실행 이력도 안정화
-  const stableHistoryRef = useRef<BacktestHistoryEntry[]>(bundle?.history ?? []);
-  if ((bundle?.history?.length ?? 0) > 0) {
-    stableHistoryRef.current = bundle!.history!;
-  }
-  const stableHistory = stableHistoryRef.current;
-
-  const scheduleIntervalSave = useCallback(
-    (minutes: number) => {
-      onPatchConfig({ backtest_interval_minutes: minutes });
-      if (saveIntervalRef.current) clearTimeout(saveIntervalRef.current);
-      saveIntervalRef.current = setTimeout(async () => {
-        await updateConfig({ ...config, backtest_interval_minutes: minutes });
-        onRefresh();
-      }, 400);
-    },
-    [config, onPatchConfig, onRefresh],
+}: Props) {
+  const [running, setRunning] = useState(Boolean(bundle?.status?.running));
+  const [msg, setMsg] = useState(bundle?.status?.message ?? "");
+  const [candleLimit, setCandleLimit] = useState<NumberInput>(
+    toNumberInput(config.backtest_candle_limit, 500),
   );
+  const [periodMonths, setPeriodMonths] = useState<3 | 6>(
+    config.backtest_period_months === 6 ? 6 : 3,
+  );
+  const [intervalInput, setIntervalInput] = useState<NumberInput>(
+    toNumberInput(config.backtest_interval_minutes, 60),
+  );
+  const [optimize, setOptimize] = useState(true);
+  const saveTimer = useRef<number | null>(null);
 
-  const scheduleCandleSave = useCallback(
-    (limit: number) => {
-      const v = Math.max(80, Math.min(1000, limit || 500));
-      setCandleLimit(v);
-      onPatchConfig({ backtest_candle_limit: v });
-      if (saveCandleRef.current) clearTimeout(saveCandleRef.current);
-      saveCandleRef.current = setTimeout(async () => {
-        await updateConfig({ ...config, backtest_candle_limit: v });
-        onRefresh();
-      }, 400);
+  useEffect(() => {
+    setRunning(Boolean(bundle?.status?.running));
+    setMsg(bundle?.status?.message ?? "");
+  }, [bundle?.status?.message, bundle?.status?.running]);
+
+  useEffect(() => {
+    setCandleLimit(toNumberInput(config.backtest_candle_limit, 500));
+  }, [config.backtest_candle_limit]);
+
+  useEffect(() => {
+    setPeriodMonths(config.backtest_period_months === 6 ? 6 : 3);
+  }, [config.backtest_period_months]);
+
+  useEffect(() => {
+    setIntervalInput(toNumberInput(config.backtest_interval_minutes, 60));
+  }, [config.backtest_interval_minutes]);
+
+  const saveBacktestConfig = useCallback(
+    (patch: Partial<AppConfig>) => {
+      onPatchConfig?.(patch);
+      const next = { ...config, ...patch };
+      if (saveTimer.current) window.clearTimeout(saveTimer.current);
+      saveTimer.current = window.setTimeout(async () => {
+        const res = await updateConfig(next);
+        if (res.config) onConfigApplied?.(res.config);
+        await onRefresh();
+      }, 350);
     },
-    [config, onPatchConfig, onRefresh],
+    [config, onConfigApplied, onPatchConfig, onRefresh],
   );
 
   useEffect(
     () => () => {
-      if (saveIntervalRef.current) clearTimeout(saveIntervalRef.current);
-      if (saveCandleRef.current) clearTimeout(saveCandleRef.current);
+      if (saveTimer.current) window.clearTimeout(saveTimer.current);
     },
     [],
   );
 
-  useEffect(() => {
-    setCandleLimit(config.backtest_candle_limit ?? 500);
-  }, [config.backtest_candle_limit]);
-
   const result = bundle?.result ?? null;
   const status = bundle?.status;
+  const profiles = bundle?.symbol_profiles ?? Object.values(result?.symbol_profiles ?? {});
 
-  useEffect(() => {
-    setRunning(status?.running ?? false);
-  }, [status?.running]);
-
-  useEffect(() => {
-    if (!running) return;
-    const iv = setInterval(async () => {
-      await fetchBacktestStatus().then(() => onRefresh());
-    }, 2500);
-    return () => clearInterval(iv);
-  }, [running, onRefresh]);
-
-  const handleRun = useCallback(async () => {
-    setMsg("시작 중…");
+  async function handleRun() {
+    const limit = Math.max(80, Math.min(60000, Number(candleLimit) || 500));
+    setRunning(true);
     const res = await runBacktest({
       symbols: config.scan_symbols?.slice(0, 8) ?? [],
-      candle_limit: candleLimit,
+      candle_limit: limit,
+      months: periodMonths,
       optimize,
     });
-    setMsg(res.message || (res.ok ? "실행 중" : "실패"));
-    if (res.ok) setRunning(true);
-    onRefresh();
-  }, [config.scan_symbols, candleLimit, optimize, onRefresh]);
+    setMsg(res.message ?? "");
+    if (!res.ok) setRunning(false);
+    await onRefresh();
+  }
 
-  const handleApply = useCallback(async () => {
+  async function handleApply() {
     const res = await applyBacktest();
-    if (!res.ok) {
-      setMsg(res.message || "적용 실패");
-      return;
-    }
-    setMsg(res.message || "적용됨");
-    if (res.config) onPatchConfig(res.config);
-    else if (res.min_score != null) onConfigApplied(res.min_score);
-    onRefresh();
-  }, [onConfigApplied, onPatchConfig, onRefresh]);
+    setMsg(res.message ?? "");
+    if (res.config) onConfigApplied?.(res.config);
+    await onRefresh();
+  }
 
-  const rec = result?.recommendation;
-  const m = result?.metrics;
-  const z = result?.zone_walkforward;
+  async function refreshBacktest() {
+    const res = await fetchBacktestStatus();
+    setRunning(res.status.running);
+    setMsg(res.status.message ?? "");
+    await onRefresh();
+  }
 
   return (
     <div className="backtest-panel">
       <div className="backtest-toolbar">
-        <button type="button" className="primary" disabled={running} onClick={handleRun}>
-          {running ? "백테스트 실행 중…" : "백테스트 실행"}
+        <button className="primary" onClick={handleRun} disabled={running}>
+          {running ? "백테스트 실행 중..." : "백테스트 실행"}
         </button>
-        <button
-          type="button"
-          disabled={
-            !rec ||
-            running ||
-            !!(config.backtest_auto_settings && config.backtest_auto_sl_tp)
-          }
-          onClick={handleApply}
-          title={
-            config.backtest_auto_settings && config.backtest_auto_sl_tp
-              ? "설정에서 백테스트 자동(점수·SL/TP)이 모두 켜져 있음"
-              : config.backtest_auto_settings
-                ? "min_score는 자동 적용 중 — SL/TP만 수동 적용하려면 점수 자동을 끄세요"
-                : config.backtest_auto_sl_tp
-                  ? "SL/TP는 자동 적용 중 — 점수만 수동 적용하려면 SL/TP 자동을 끄세요"
-                  : "추천 min_score·SL/TP를 설정에 반영"
-          }
-        >
-          추천 설정 적용
-        </button>
+        <button onClick={handleApply}>추천 설정 적용</button>
+        <button onClick={refreshBacktest}>상태 새로고침</button>
+        <label>
+          기간
+          <select
+            value={periodMonths}
+            onChange={(e) => {
+             const months = (Number(e.target.value) === 6 ? 6 : 3) as 3 | 6;
+              setPeriodMonths(months);
+             const auto = calcCandleLimit(months, config.strategy_mode);
+             setCandleLimit(auto);
+             saveBacktestConfig({ backtest_period_months: months, backtest_candle_limit: auto });
+            }}
+          >
+            <option value={3}>최근 3개월</option>
+            <option value={6}>최근 6개월</option>
+          </select>
+        </label>
         <label>
           캔들
           <input
             type="number"
             min={80}
-            max={1000}
+            max={60000}
+            step={10}
             value={candleLimit}
-            onChange={(e) => scheduleCandleSave(Number(e.target.value))}
+            onChange={(e) => {
+              if (e.target.value === "") {
+                setCandleLimit("");
+                onPatchConfig?.({ backtest_candle_limit: "" as unknown as number });
+                return;
+              }
+              const n = Math.max(80, Math.min(60000, Number(e.target.value)));
+              setCandleLimit(n);
+              saveBacktestConfig({ backtest_candle_limit: n });
+            }}
           />
-        </label>
-        <label className="chk">
-          <input
-            type="checkbox"
-            checked={optimize}
-            onChange={(e) => setOptimize(e.target.checked)}
-          />
-          min_score 자동 탐색
+          {candleLimit ? <span style={{ fontSize: "0.75em", color: "#aaa", marginLeft: 4 }}>{candleDesc(Number(candleLimit), config.strategy_mode)}</span> : null}
         </label>
         <label>
           자동 주기(분)
           <input
             type="number"
             min={1}
-            max={1440}
-            value={intervalMin}
+            step={1}
+            value={intervalInput}
             onChange={(e) => {
-              const v = Math.max(1, Math.min(1440, Number(e.target.value) || 60));
-              scheduleIntervalSave(v);
+              if (e.target.value === "") {
+                setIntervalInput("");
+                onPatchConfig?.({ backtest_interval_minutes: "" as unknown as number });
+                return;
+              }
+              const n = Math.max(1, Number(e.target.value));
+              setIntervalInput(n);
+              saveBacktestConfig({ backtest_interval_minutes: n });
             }}
-            title="서버 켜지면 바로 시작, 완료 후 이 간격으로 무한 반복"
           />
         </label>
-        {status && (
-          <span className="bt-progress">
-            {status.phase} {status.progress_pct > 0 ? `${fmtNum(status.progress_pct, 0)}%` : ""}
-            {status.message ? ` — ${status.message}` : ""}
-          </span>
-        )}
+        <label>
+          <input type="checkbox" checked={optimize} onChange={(e) => setOptimize(e.target.checked)} />
+          min_score 자동 탐색
+        </label>
       </div>
-      {msg && <p className="bt-msg">{msg}</p>}
 
-      <p className="bt-auto-hint">
-        {bundle?.auto_run !== false
-          ? `서버 시작 시 자동 백테스트 → 완료 후 ${intervalMin}분마다 무한 반복 (버튼 불필요) · backend/data/backtest_history.jsonl`
-          : "자동 백테스트 꺼짐 (.env OAT_BACKTEST_AUTO_RUN=1)"}
-        {config.backtest_auto_settings && (
-          <>
-            <br />
-            <strong style={{ color: "#3fb950" }}>
-              유동 설정 ON — 완료 시 min_score만 자동 반영 (주문 크기는 설정 화면 값 유지).
-            </strong>
-          </>
-        )}
-        {config.backtest_auto_sl_tp && (
-          <>
-            <br />
-            <strong style={{ color: "#58a6ff" }}>
-              SL/TP 자동 ON — 종목별 백테스트 프로필이 자동매매 진입 SL/TP에 적용됩니다.
-            </strong>
-          </>
-        )}
-      </p>
-
-      {(stableAutoHist.length ?? 0) > 0 && (
-        <div className="section">
-          <h2>자동 설정 반영 내역</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>시각</th>
-                <th>결과</th>
-                <th>사유</th>
-                <th>백테스트</th>
-                <th>변경값</th>
-              </tr>
-            </thead>
-            <tbody>
-              {stableAutoHist.map((h) => (
-                <tr key={`${h.result_id}-${h.ts}`}>
-                  <td>{new Date(h.ts).toLocaleString()}</td>
-                  <td>
-                    <span className={`badge ${h.accepted ? "running" : "stopped"}`}>
-                      {h.accepted ? "적용" : "보류"}
-                    </span>
-                  </td>
-                  <td>{h.reason}</td>
-                  <td>
-                    PnL {h.metrics?.total_pnl != null ? fmtUsd(h.metrics.total_pnl, 2) : "—"} ·
-                    승률 {h.metrics?.win_rate != null ? `${fmtNum(h.metrics.win_rate, 1)}%` : "—"} ·
-                    거래 {h.metrics?.trade_count ?? 0}건
-                  </td>
-                  <td>
-                    {h.after
-                      ? `score ${h.before?.min_score}→${h.after.min_score}, SL ${h.before?.stop_loss_pct}→${h.after.stop_loss_pct}, TP ${h.before?.take_profit_pct}→${h.after.take_profit_pct}`
-                      : "변경 없음"}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <div className="bt-auto-hint">
+        서버 시작 시 자동 백테스트 {bundle?.auto_run ? "ON" : "OFF"} · 주기{" "}
+        {bundle?.interval_minutes ?? config.backtest_interval_minutes ?? 60}분 · 기간 {periodMonths}개월 · 상위 코인
+        데이터는 누적 캐시 후 재사용합니다.
+      </div>
+      {(msg || status?.message) && (
+        <div className="bt-msg">
+          {status?.running ? `진행 ${status.progress_pct}% · ${status.phase} · ` : ""}
+          {msg || status?.message}
         </div>
       )}
 
-      {(stableProfiles.length ?? 0) > 0 && (
+      <MetricsCards result={result} />
+      <Recommendation result={result} />
+      <ZoneWalkForward result={result} />
+      {result && <BacktestCandlesGrid result={result} />}
+      <TradesTable result={result} />
+      <SymbolProfiles profiles={profiles} />
+
+      {!!result?.logs?.length && (
         <div className="section">
-          <h2>종목별 SL/TP 프로필 (자동매매 적용)</h2>
-          <div className="bt-dir-scroll">
+          <h2>백테스트 로그</h2>
+          <div className="bt-log-scroll">
+            {result.logs.slice(-80).map((l, idx) => (
+              <div key={`${l.ts}-${idx}`}>
+                {l.ts} [{l.level}] {l.message}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!!bundle?.auto_apply_history?.length && (
+        <div className="section">
+          <h2>자동 적용 이력</h2>
+          <div className="bt-scroll">
             <table>
               <thead>
                 <tr>
-                  <th>종목</th>
-                  <th>SL%</th>
-                  <th>TP%</th>
-                  <th>승률</th>
-                  <th>거래</th>
-                  <th>익절평균</th>
+                  <th>시각</th>
+                  <th>결과</th>
+                  <th>사유</th>
+                  <th>전</th>
+                  <th>후</th>
                 </tr>
               </thead>
               <tbody>
-                {stableProfiles
-                  .sort((a, b) => b.win_rate - a.win_rate)
-                  .map((p) => (
-                    <tr key={p.inst_id}>
-                      <td>{p.inst_id}</td>
-                      <td>{fmtNum(p.stop_loss_pct, 1)}</td>
-                      <td><strong>{fmtNum(p.take_profit_pct, 1)}</strong></td>
-                      <td>{fmtNum(p.win_rate, 1)}%</td>
-                      <td>{p.trades}</td>
-                      <td>
-                        {p.avg_win_tp_pct && p.avg_win_tp_pct > 0
-                          ? `${fmtNum(p.avg_win_tp_pct, 1)}%`
-                          : "—"}
-                      </td>
-                    </tr>
-                  ))}
+                {bundle.auto_apply_history.slice(0, 20).map((a, idx) => (
+                  <tr key={`${a.ts}-${idx}`}>
+                    <td>{a.ts}</td>
+                    <td className={a.accepted ? "green" : "red"}>{a.accepted ? "적용" : "보류"}</td>
+                    <td>{a.reason}</td>
+                    <td>
+                      {a.before
+                        ? `${a.before.min_score} · SL ${fmtPct(a.before.stop_loss_pct)} / TP ${fmtPct(
+                            a.before.take_profit_pct,
+                          )}`
+                        : "-"}
+                    </td>
+                    <td>
+                      {a.after
+                        ? `${a.after.min_score} · SL ${fmtPct(a.after.stop_loss_pct)} / TP ${fmtPct(
+                            a.after.take_profit_pct,
+                          )}`
+                        : "-"}
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
         </div>
       )}
 
-      {(stableHistory.length ?? 0) > 0 && (
-        <div className="section">
-          <h2>실행 이력 ({stableHistory.length})</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>시각</th>
-                <th>상태</th>
-                <th>종목</th>
-                <th>방향</th>
-                <th>PnL</th>
-                <th>승률</th>
-                <th>거래</th>
-                <th>추천</th>
-                <th>SL/TP</th>
-              </tr>
-            </thead>
-            <tbody>
-              {stableHistory.map((h) => (
-                <tr key={`${h.id}-${h.finished_at}`}>
-                  <td className="ts-cell">{h.finished_at?.slice(0, 19).replace("T", " ")}</td>
-                  <td title={h.error || undefined}>
-                    {h.status}
-                    {h.status === "error" && h.error ? (
-                      <span className="bt-err-hint" title={h.error}>
-                        {" "}
-                        ({h.error.length > 40 ? `${h.error.slice(0, 40)}…` : h.error})
-                      </span>
-                    ) : null}
-                  </td>
-                  <td className="sym-cell" title={(h.symbols ?? []).join(", ")}>
-                    {(h.symbols ?? []).join(", ") || "—"}
-                  </td>
-                  <td>
-                    {h.direction === "inverse" ? "역방향" : h.direction === "normal" ? "정방향" : "—"}
-                    {h.window_ratio != null && h.window_ratio < 1
-                      ? ` ${Math.round(h.window_ratio * 100)}%`
-                      : ""}
-                  </td>
-                  <td className={(h.metrics?.total_pnl ?? 0) >= 0 ? "positive" : "negative"}>
-                    {h.metrics?.total_pnl != null
-                      ? `${h.metrics.total_pnl >= 0 ? "+" : ""}${fmtNum(h.metrics.total_pnl)}`
-                      : "—"}
-                  </td>
-                  <td>
-                    {h.metrics?.win_rate != null ? `${fmtNum(h.metrics.win_rate, 1)}%` : "—"}
-                  </td>
-                  <td>{h.trade_count}</td>
-                  <td>{h.recommendation?.min_score ?? "—"}</td>
-                  <td>
-                    {h.recommendation?.stop_loss_pct != null
-                      ? `${fmtNum(h.recommendation.stop_loss_pct, 1)}/${fmtNum(h.recommendation.take_profit_pct ?? 0, 1)}%`
-                      : h.applied_sl_pct != null
-                        ? `${fmtNum(h.applied_sl_pct, 1)}/${fmtNum(h.applied_tp_pct ?? 0, 1)}%`
-                        : "—"}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {result && (
-        <>
-          <div className="grid backtest-summary">
-            <div className="card">
-              <h3>시작 / 최종 자산</h3>
-              <div className="value" style={{ fontSize: "1rem" }}>
-                ${fmtNum(Number(m?.start_equity ?? result.params_snapshot?.start_equity ?? 0), 0)}
-                {" → "}
-                ${fmtNum(m?.end_equity ?? 0, 0)}
-              </div>
-              <div className="sub">USD (모의 초기자금 · USDT-M ≈ USD)</div>
-            </div>
-            <div className="card">
-              <h3>총 손익</h3>
-              <div className={`value ${(m?.total_pnl ?? 0) >= 0 ? "positive" : "negative"}`}>
-                {(m?.total_pnl ?? 0) >= 0 ? "+" : ""}{fmtUsd(m?.total_pnl ?? 0, 2)}
-              </div>
-              <div className="sub">
-                ({fmtNum(m?.total_pnl_pct ?? 0, 2)}%)
-                {(m?.total_fees_usdt ?? 0) > 0
-                  ? ` · 수수료 ${fmtNum(m?.total_fees_usdt ?? 0)}`
-                  : ""}
-              </div>
-            </div>
-            <div className="card">
-              <h3>1회 투입 (명목)</h3>
-              <div className="value">
-                ${fmtNum(Number(m?.order_notional_usdt ?? result.params_snapshot?.order_notional_usdt ?? 0), 0)}
-              </div>
-              <div className="sub">
-                증거금 ≈ $
-                {fmtNum(
-                  (m?.order_notional_usdt ?? 0) /
-                    Math.max(1, Number(result.params_snapshot?.leverage ?? 10)),
-                  0,
-                )}{" "}
-                (레버 {String(result.params_snapshot?.leverage ?? "—")}x)
-              </div>
-            </div>
-            <div className="card">
-              <h3>거래 / 승률</h3>
-              <div className="value">{m?.trade_count ?? 0}건</div>
-              <div className="sub">승률 {fmtNum(m?.win_rate ?? 0, 1)}%</div>
-            </div>
-            <div className="card">
-              <h3>롱 / 숏</h3>
-              <div className="value">
-                {m?.long_trades ?? 0} / {m?.short_trades ?? 0}
-              </div>
-              <div className="sub">평균 진입 점수 {fmtNum(m?.avg_score_entries ?? 0, 1)}</div>
-            </div>
-            <div className="card">
-              <h3>추천 min_score</h3>
-              <div className="value">{rec?.min_score ?? "—"}</div>
-              <div className="sub">{rec?.reason ?? "탐색 안 함"}</div>
-            </div>
-            <div className="card">
-              <h3>추천 SL / TP</h3>
-              <div className="value">
-                {rec?.stop_loss_pct != null && rec?.take_profit_pct != null
-                  ? `${fmtNum(rec.stop_loss_pct, 1)}% / ${fmtNum(rec.take_profit_pct, 1)}%`
-                  : "—"}
-              </div>
-              <div className="sub">{rec?.sl_tp_reason ?? "SL/TP 탐색 안 함"}</div>
-            </div>
-            <div className="card bt-direction-card">
-              <h3>추천 방향</h3>
-              <div className="value">
-                {rec?.direction === "inverse" ? "역방향 (신호 반전)" : "정방향"}
-              </div>
-              <div className="sub">
-                구간 {Math.round((rec?.window_ratio ?? 1) * 100)}%
-                {result.symbols?.length ? ` · ${result.symbols.join(", ")}` : ""}
-              </div>
-            </div>
-          </div>
-
-          {z && z.samples > 0 && (
-            <div className="section">
-              <h2>ATR·구조 구간 예측 검증</h2>
-              <div className="grid backtest-summary">
-                <div className="card">
-                  <h3>구간 정확도</h3>
-                  <div className={`value ${z.accuracy_pct >= 50 ? "positive" : "negative"}`}>
-                    {fmtNum(z.accuracy_pct, 1)}%
-                  </div>
-                  <div className="sub">{z.samples}개 예측 · {z.symbols}종목</div>
-                </div>
-                <div className="card">
-                  <h3>롱 / 숏 정확도</h3>
-                  <div className="value">
-                    {fmtNum(z.long_accuracy_pct, 1)}% / {fmtNum(z.short_accuracy_pct, 1)}%
-                  </div>
-                  <div className="sub">앞봉 예측 후 다음 12봉 검증</div>
-                </div>
-                <div className="card">
-                  <h3>평균 Forward R</h3>
-                  <div className={`value ${z.avg_forward_r >= 0 ? "positive" : "negative"}`}>
-                    {fmtNum(z.avg_forward_r, 2)}R
-                  </div>
-                  <div className="sub">ATR 기준 유리 진행폭</div>
-                </div>
-                <div className="card">
-                  <h3>실패돌파</h3>
-                  <div className={`value ${z.false_break_pct <= 30 ? "positive" : "negative"}`}>
-                    {fmtNum(z.false_break_pct, 1)}%
-                  </div>
-                  <div className="sub">돌파 예측 후 반대 ATR 먼저 터진 비율</div>
-                </div>
-              </div>
-              <div className="sub">
-                앞 80봉으로 지지/저항·ATR·EMA 기울기·MACD를 판단하고, 다음 12봉에서 1ATR 이상 유리하게 진행됐는지 비교합니다.
-              </div>
-              <table>
-                <thead>
-                  <tr>
-                    <th>종목</th>
-                    <th>방향</th>
-                    <th>근거</th>
-                    <th>ATR%</th>
-                    <th>박스폭</th>
-                    <th>결과</th>
-                    <th>Forward R</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(z.details ?? []).slice(0, 20).map((d, i) => (
-                    <tr key={`${d.inst_id}-${d.bar}-${i}`}>
-                      <td>{d.inst_id}</td>
-                      <td>
-                        <span className={`badge ${d.direction === "long" ? "long" : "short"}`}>
-                          {d.direction.toUpperCase()}
-                        </span>
-                      </td>
-                      <td>{d.reason}</td>
-                      <td>{fmtNum(d.atr_pct, 2)}%</td>
-                      <td>{fmtNum(d.width_atr, 2)} ATR</td>
-                      <td className={d.hit ? "positive" : d.false_break ? "negative" : ""}>
-                        {d.hit ? "적중" : d.false_break ? "실패돌파" : "미확정"}
-                      </td>
-                      <td className={d.forward_r >= 0 ? "positive" : "negative"}>
-                        {fmtNum(d.forward_r, 2)}R
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          <BacktestCandlesGrid result={result} />
-
-          {rec?.direction_trials && rec.direction_trials.length > 0 && (
-            <div className="section">
-              <h2>방향·구간 탐색 ({rec.direction_trials.length}조합)</h2>
-              <div className="bt-dir-scroll">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>방향</th>
-                      <th>구간</th>
-                      <th>score</th>
-                      <th>PnL</th>
-                      <th>승률</th>
-                      <th>거래</th>
-                      <th>롱/숏</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rec.direction_trials
-                      .filter((t) => t.trades > 0)
-                      .sort(
-                        (a, b) =>
-                          b.total_pnl + b.win_rate * 0.35 - (a.total_pnl + a.win_rate * 0.35),
-                      )
-                      .slice(0, 24)
-                      .map((t, i) => (
-                        <tr
-                          key={`${t.mode}-${t.window_ratio}-${t.min_score}-${i}`}
-                          className={
-                            t.mode === rec.direction &&
-                            t.window_ratio === rec.window_ratio &&
-                            t.min_score === rec.min_score
-                              ? "row-best"
-                              : ""
-                          }
-                        >
-                          <td>{t.mode === "inverse" ? "역방향" : "정방향"}</td>
-                          <td>{Math.round(t.window_ratio * 100)}%</td>
-                          <td>{t.min_score}</td>
-                          <td className={t.total_pnl >= 0 ? "positive" : "negative"}>
-                            {t.total_pnl >= 0 ? "+" : ""}{fmtNum(t.total_pnl)}
-                          </td>
-                          <td>{fmtNum(t.win_rate, 1)}%</td>
-                          <td>{t.trades}</td>
-                          <td>
-                            {t.long_trades ?? 0}/{t.short_trades ?? 0}
-                          </td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {rec?.sl_tp_trials && rec.sl_tp_trials.length > 0 && (
-            <div className="section">
-              <h2>SL/TP 탐색 (승률 우선, {rec.sl_tp_trials.length}조합)</h2>
-              <div className="bt-dir-scroll">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>SL%</th>
-                      <th>TP%</th>
-                      <th>승률</th>
-                      <th>PnL</th>
-                      <th>거래</th>
-                      <th>익절</th>
-                      <th>손절</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rec.sl_tp_trials
-                      .filter((t) => t.trades > 0)
-                      .sort(
-                        (a, b) =>
-                          b.win_rate + b.total_pnl * 0.05 - (a.win_rate + a.total_pnl * 0.05),
-                      )
-                      .slice(0, 20)
-                      .map((t, i) => (
-                        <tr
-                          key={`${t.stop_loss_pct}-${t.take_profit_pct}-${i}`}
-                          className={
-                            t.stop_loss_pct === rec.stop_loss_pct &&
-                            t.take_profit_pct === rec.take_profit_pct
-                              ? "row-best"
-                              : ""
-                          }
-                        >
-                          <td>{fmtNum(t.stop_loss_pct, 1)}</td>
-                          <td>{fmtNum(t.take_profit_pct, 1)}</td>
-                          <td>{fmtNum(t.win_rate, 1)}%</td>
-                          <td className={t.total_pnl >= 0 ? "positive" : "negative"}>
-                            {t.total_pnl >= 0 ? "+" : ""}{fmtNum(t.total_pnl)}
-                          </td>
-                          <td>{t.trades}</td>
-                          <td>{t.tp_hits ?? 0}</td>
-                          <td>{t.sl_hits ?? 0}</td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {rec?.trials && rec.trials.length > 0 && (
-            <div className="section">
-              <h2>점수별 탐색 결과</h2>
-              <table>
-                <thead>
-                  <tr>
-                    <th>min_score</th>
-                    <th>PnL</th>
-                    <th>승률</th>
-                    <th>거래</th>
-                    <th>롱</th>
-                    <th>숏</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rec.trials.map((t) => (
-                    <tr
-                      key={t.min_score}
-                      className={t.min_score === rec.min_score ? "row-best" : ""}
-                    >
-                      <td><strong>{t.min_score}</strong></td>
-                      <td className={t.total_pnl >= 0 ? "positive" : "negative"}>
-                        {t.total_pnl >= 0 ? "+" : ""}{fmtNum(t.total_pnl)}
-                      </td>
-                      <td>{fmtNum(t.win_rate, 1)}%</td>
-                      <td>{t.trades}</td>
-                      <td>{t.long_entries}</td>
-                      <td>{t.short_entries}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          <div className="section bt-split">
-            <div className="bt-col">
-              <h2>백테스트 거래 ({result.trades?.length ?? 0})</h2>
-              <div className="bt-scroll">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>캔들</th>
-                      <th>종목</th>
-                      <th>방향</th>
-                      <th>점수</th>
-                      <th>투입(명목)</th>
-                      <th>증거금</th>
-                      <th>진입</th>
-                      <th>청산</th>
-                      <th>손익</th>
-                      <th>사유</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(result.trades ?? []).map((t, i) => (
-                      <tr key={`${t.inst_id}-${i}`}>
-                        <td className="chart-col">
-                          <TradeMiniCandle
-                            instId={t.inst_id}
-                            entryBar={t.entry_bar}
-                            exitBar={t.exit_bar}
-                            charts={result.symbol_charts}
-                          />
-                        </td>
-                        <td>{t.inst_id}</td>
-                        <td><span className={`badge ${t.side}`}>{t.side.toUpperCase()}</span></td>
-                        <td>{fmtNum(t.score, 0)}</td>
-                        <td>${fmtNum(t.notional_usdt ?? 0, 0)}</td>
-                        <td className="muted">${fmtNum(t.margin_usdt ?? 0, 0)}</td>
-                        <td>{fmtPrice(t.entry_price)}</td>
-                        <td>{fmtPrice(t.exit_price)}</td>
-                        <td className={t.pnl_usdt >= 0 ? "positive" : "negative"}>
-                          {t.pnl_usdt >= 0 ? "+" : ""}{fmtUsd(t.pnl_usdt, 2)}
-                          <span className="muted" style={{ fontSize: "0.7rem" }}>
-                            {" "}({t.pnl_usdt >= 0 ? "+" : ""}{fmtNum(t.pnl_pct, 2)}%)
-                          </span>
-                        </td>
-                        <td style={{ fontSize: "0.75rem" }}>{t.exit_reason}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-            <div className="bt-col">
-              <h2>세부 로그</h2>
-              <div className="bt-log-scroll">
-                {(result.logs ?? []).map((log, i) => (
-                  <div key={i} className={`log-entry ${log.level}`}>
-                    <span className="ts">{log.ts?.slice(11, 19)}</span>
-                    {log.message}
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <p className="bt-note">
-            시작 ${String(result.params_snapshot?.start_equity ?? m?.start_equity ?? "—")} →
-            최종 ${String(m?.end_equity ?? "—")} ·
-            1회 명목 ${String(result.params_snapshot?.order_notional_usdt ?? m?.order_notional_usdt ?? "—")} ·
-            적용 min_score={String(result.params_snapshot?.min_score_applied ?? "—")}
-            · SL/TP {String(result.params_snapshot?.stop_loss_pct_applied ?? "—")}/
-            {String(result.params_snapshot?.take_profit_pct_applied ?? "—")}%
-            · 방향 {String(result.params_snapshot?.direction ?? "normal")}
-            · 구간 {Math.round(Number(result.params_snapshot?.window_ratio ?? 1) * 100)}%
-          </p>
-        </>
-      )}
-
-      {!result && !running && (
-        <p style={{ color: "#8b949e", marginTop: 16 }}>
-          OKX 캔들(최대 1000봉)로 과거 시뮬레이션 후 min_score·롱/숏 진입을 추천합니다.
-          실행 후 「추천 점수 설정 적용」으로 라이브 설정에 반영하세요.
-        </p>
-      )}
+      <HistoryTable history={bundle?.history} />
     </div>
   );
 }

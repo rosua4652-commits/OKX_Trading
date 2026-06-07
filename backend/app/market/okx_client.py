@@ -112,6 +112,35 @@ class OKXClient:
             logger.error("get_candles error: %s", e)
         return []
 
+    def get_history_candles(
+        self,
+        inst_id: str,
+        bar: str = "5m",
+        limit: int = 100,
+        before: str = "",
+        after: str = "",
+    ) -> list[list[str]]:
+        self._ensure_imports()
+        if not self._market:
+            return []
+        try:
+            params: dict[str, Any] = {"instId": inst_id, "bar": bar, "limit": str(limit)}
+            if before:
+                params["before"] = before
+            if after:
+                params["after"] = after
+            fn = getattr(self._market, "get_history_candlesticks", None)
+            if fn is None:
+                fn = getattr(self._market, "get_history_candles", None)
+            if fn is None:
+                return self.get_candles(inst_id, bar, limit)
+            result = fn(**params)
+            if self._ok(result):
+                return result.get("data", [])
+        except Exception as e:
+            logger.error("get_history_candles error: %s", e)
+        return []
+
     def get_instruments(self, inst_type: str = "SWAP") -> list[dict[str, Any]]:
         self._ensure_imports()
         if not self._public:

@@ -1,3 +1,4 @@
+from pathlib import Path
 from pydantic_settings import BaseSettings
 
 
@@ -26,6 +27,11 @@ class Settings(BaseSettings):
     okx_api_secret: str = ""
     okx_passphrase: str = ""
     okx_flag: str = "1"
+
+    @property
+    def data_dir(self) -> Path:
+        base = Path(__file__).resolve().parent.parent.parent
+        return base / "data"
 
     class Config:
         env_prefix = "OAT_"

@@ -127,6 +127,19 @@ function App() {
 
   const isPaper = config.trade_mode === "paper";
   const moneyTag = isPaper ? "USD · 모의" : "USD";
+  const longCandidates = candidates.filter((c) => c.outlook === "long");
+  const shortCandidates = candidates.filter((c) => c.outlook === "short");
+  const activePositions = portfolio.positions.length;
+  const bestCandidate = candidates[0];
+  const latestDecision = decisionLogs[0];
+  const btStatus = data.backtest?.status;
+  const btResult = data.backtest?.result;
+  const safetyTags = [
+    config.backtest_auto_sl_tp ? "백테스트 SL/TP 자동" : "수동 SL/TP",
+    config.trend_scale_in ? "추세추종 추가진입" : "추가진입 OFF",
+    config.daily_loss_limit_enabled ? "일 손실 제한 ON" : "일 손실 제한 OFF",
+    config.position_side === "auto" ? "AI 방향" : `${(config.position_side || "auto").toUpperCase()} 고정`,
+  ];
 
   const liqRisk = (p: Position) => {
     const liq = p.liquidation_price ?? 0;
@@ -148,14 +161,58 @@ function App() {
     setConfig((c) => (c ? { ...c, ...patch } : c));
   };
 
+  const patchNumberConfig = (key: keyof AppConfig, raw: string) => {
+    lockConfigEdits();
+    if (raw === "") {
+      setConfig((c) => (c ? ({ ...c, [key]: "" } as AppConfig) : c));
+      return;
+    }
+    const n = Number(raw);
+    if (Number.isFinite(n)) {
+      setConfig((c) => (c ? ({ ...c, [key]: n } as AppConfig) : c));
+    }
+  };
+
+  const normalizeNumberConfig = (cfg: AppConfig): AppConfig => {
+    const fallback: Partial<Record<keyof AppConfig, number>> = {
+      paper_initial_balance: 10000,
+      order_size_usdt: 50,
+      order_size_pct: 2,
+      max_order_size_usdt: 0,
+      min_order_size_usdt: 0,
+      leverage: 3,
+      stop_loss_pct: 2,
+      take_profit_pct: 3,
+      max_scale_ins: 2,
+      scale_in_size_pct: 50,
+      scale_in_min_pnl_pct: 3,
+      trend_exit_confirm_bars: 3,
+      max_positions: 5,
+      daily_loss_limit_pct: 5,
+      daily_loss_limit_min_usdt: 3,
+      min_score: 55,
+      backtest_interval_minutes: 60,
+      backtest_candle_limit: 500,
+      backtest_period_months: 3,
+    };
+    const out: Record<string, unknown> = { ...cfg };
+    for (const [key, fb] of Object.entries(fallback)) {
+      const value = out[key];
+      const n = Number(value);
+      out[key] = value === "" || !Number.isFinite(n) ? fb : n;
+    }
+    out.backtest_period_months = Number(out.backtest_period_months) === 6 ? 6 : 3;
+    return out as unknown as AppConfig;
+  };
+
   const handleSaveConfig = async () => {
     setConfigSaveStatus("saving");
-    const payload: AppConfig = {
+    const payload: AppConfig = normalizeNumberConfig({
       ...config,
       okx_api_key: apiDraft.key,
       okx_api_secret: apiDraft.secret,
       okx_passphrase: apiDraft.pass,
-    };
+    });
     try {
       const res = await updateConfig(payload);
       setApiDraft({ key: "", secret: "", pass: "" });
@@ -329,6 +386,10 @@ function App() {
                   step={1}
                   value={config.paper_initial_balance ?? 10000}
                   onChange={(e) => {
+                    if (e.target.value === "") {
+                      patchNumberConfig("paper_initial_balance", "");
+                      return;
+                    }
                     const n = Number(e.target.value);
                     if (!Number.isFinite(n) || n <= 0) return;
                     patchConfig({ paper_initial_balance: n });
@@ -424,6 +485,10 @@ function App() {
                 step={1}
                 value={config.paper_initial_balance ?? 10000}
                 onChange={(e) => {
+                  if (e.target.value === "") {
+                    patchNumberConfig("paper_initial_balance", "");
+                    return;
+                  }
                   const n = Number(e.target.value);
                   if (!Number.isFinite(n) || n <= 0) return;
                   patchConfig({ paper_initial_balance: n });
@@ -451,7 +516,7 @@ function App() {
                 <input
                   type="number"
                   value={config.order_size_usdt}
-                  onChange={(e) => patchConfig({ order_size_usdt: Number(e.target.value) })}
+                  onChange={(e) => patchNumberConfig("order_size_usdt", e.target.value)}
                 />
               </div>
             ) : (
@@ -463,7 +528,7 @@ function App() {
                     step="0.1"
                     min={0.1}
                     value={config.order_size_pct ?? 2}
-                    onChange={(e) => patchConfig({ order_size_pct: Number(e.target.value) })}
+                    onChange={(e) => patchNumberConfig("order_size_pct", e.target.value)}
                   />
                 </div>
                 <div className="settings-row">
@@ -495,7 +560,7 @@ function App() {
                 type="number"
                 min={0}
                 value={config.max_order_size_usdt ?? 0}
-                onChange={(e) => patchConfig({ max_order_size_usdt: Number(e.target.value) })}
+                onChange={(e) => patchNumberConfig("max_order_size_usdt", e.target.value)}
               />
             </div>
             <div className="order-size-breakdown">
@@ -606,7 +671,7 @@ function App() {
             <div className="settings-row">
               <label>레버리지</label>
               <input type="number" value={config.leverage}
-                onChange={(e) => patchConfig({ leverage: Number(e.target.value) })} />
+                onChange={(e) => patchNumberConfig("leverage", e.target.value)} />
             </div>
             {config.instrument_type !== "spot" && (
               <div className="settings-row">
@@ -625,14 +690,14 @@ function App() {
               <input type="number" step="0.1" value={config.stop_loss_pct}
                 disabled={!!config.backtest_auto_sl_tp}
                 title={config.backtest_auto_sl_tp ? "백테스트 SL/TP 자동이 켜져 있어 백테스트 결과로 갱신됩니다" : ""}
-                onChange={(e) => patchConfig({ stop_loss_pct: Number(e.target.value) })} />
+                onChange={(e) => patchNumberConfig("stop_loss_pct", e.target.value)} />
             </div>
             <div className="settings-row">
               <label>익절 PnL% (TP)</label>
               <input type="number" step="0.1" value={config.take_profit_pct}
                 disabled={!!config.backtest_auto_sl_tp}
                 title={config.backtest_auto_sl_tp ? "백테스트 SL/TP 자동이 켜져 있어 백테스트 결과로 갱신됩니다" : ""}
-                onChange={(e) => patchConfig({ take_profit_pct: Number(e.target.value) })} />
+                onChange={(e) => patchNumberConfig("take_profit_pct", e.target.value)} />
             </div>
             <div className="settings-row settings-check-block">
               <label className="settings-check">
@@ -678,7 +743,7 @@ function App() {
                 max={5}
                 value={config.max_scale_ins ?? 2}
                 disabled={config.trend_scale_in === false}
-                onChange={(e) => patchConfig({ max_scale_ins: Number(e.target.value) })}
+                onChange={(e) => patchNumberConfig("max_scale_ins", e.target.value)}
               />
             </div>
             <div className="settings-row">
@@ -690,7 +755,7 @@ function App() {
                 step={5}
                 value={config.scale_in_size_pct ?? 50}
                 disabled={config.trend_scale_in === false}
-                onChange={(e) => patchConfig({ scale_in_size_pct: Number(e.target.value) })}
+                onChange={(e) => patchNumberConfig("scale_in_size_pct", e.target.value)}
               />
             </div>
             <div className="settings-row">
@@ -701,7 +766,7 @@ function App() {
                 step={0.5}
                 value={config.scale_in_min_pnl_pct ?? 3}
                 disabled={config.trend_scale_in === false}
-                onChange={(e) => patchConfig({ scale_in_min_pnl_pct: Number(e.target.value) })}
+                onChange={(e) => patchNumberConfig("scale_in_min_pnl_pct", e.target.value)}
               />
             </div>
             <div className="settings-row">
@@ -712,7 +777,7 @@ function App() {
                 max={6}
                 value={config.trend_exit_confirm_bars ?? 3}
                 disabled={config.trend_scale_in === false}
-                onChange={(e) => patchConfig({ trend_exit_confirm_bars: Number(e.target.value) })}
+                onChange={(e) => patchNumberConfig("trend_exit_confirm_bars", e.target.value)}
               />
             </div>
             <p style={{ fontSize: "0.75rem", color: "#8b949e", gridColumn: "1 / -1", marginTop: -6 }}>
@@ -729,7 +794,7 @@ function App() {
             <div className="settings-row">
               <label>최대 포지션</label>
               <input type="number" value={config.max_positions}
-                onChange={(e) => patchConfig({ max_positions: Number(e.target.value) })} />
+                onChange={(e) => patchNumberConfig("max_positions", e.target.value)} />
             </div>
             <div className="settings-row settings-check-block">
               <label className="settings-check">
@@ -756,7 +821,7 @@ function App() {
                 step="0.1"
                 value={config.daily_loss_limit_pct ?? 5}
                 disabled={config.daily_loss_limit_enabled === false}
-                onChange={(e) => patchConfig({ daily_loss_limit_pct: Number(e.target.value) })}
+                onChange={(e) => patchNumberConfig("daily_loss_limit_pct", e.target.value)}
               />
             </div>
             <div className="settings-row">
@@ -767,7 +832,7 @@ function App() {
                 step="0.1"
                 value={config.daily_loss_limit_min_usdt ?? 3}
                 disabled={config.daily_loss_limit_enabled === false}
-                onChange={(e) => patchConfig({ daily_loss_limit_min_usdt: Number(e.target.value) })}
+                onChange={(e) => patchNumberConfig("daily_loss_limit_min_usdt", e.target.value)}
               />
             </div>
             <p style={{ fontSize: "0.75rem", color: "#8b949e", gridColumn: "1 / -1", marginTop: -6 }}>
@@ -817,7 +882,7 @@ function App() {
                     ? "백테스트 자동 설정이 켜져 있어 백테스트 결과로 갱신됩니다"
                     : ""
                 }
-                onChange={(e) => patchConfig({ min_score: Number(e.target.value) })}
+                onChange={(e) => patchNumberConfig("min_score", e.target.value)}
               />
             </div>
             <div className="settings-row">
@@ -872,9 +937,9 @@ function App() {
       {mainTab === "backtest" ? (
         <BacktestPanel
           config={config}
-          bundle={data.backtest ?? null}
+          bundle={data.backtest ?? undefined}
           onRefresh={refresh}
-          onConfigApplied={(minScore) => patchConfig({ min_score: minScore })}
+          onConfigApplied={(nextConfig) => patchConfig(nextConfig)}
           onPatchConfig={patchConfig}
         />
       ) : mainTab === "manual" ? (
@@ -978,6 +1043,68 @@ function App() {
         tradeMode={config.trade_mode}
         moneyTag={moneyTag}
       />
+
+      <section className="section strategy-cockpit">
+        <div className="strategy-cockpit-head">
+          <div>
+            <h2>전략 상황판</h2>
+            <p>실시간 후보, 포지션, 백테스트 조율 상태를 한 화면에서 확인합니다.</p>
+          </div>
+          <div className={`strategy-mode-pill ${running ? "running" : "stopped"}`}>
+            {running ? "자동매매 실행 중" : "자동매매 정지"}
+          </div>
+        </div>
+        <div className="strategy-cockpit-grid">
+          <div className="strategy-tile">
+            <span>현재 노출</span>
+            <strong>{activePositions}/{config.max_positions}</strong>
+            <small>포지션 제한</small>
+          </div>
+          <div className="strategy-tile">
+            <span>후보 방향</span>
+            <strong>
+              <b className="positive">{longCandidates.length}</b>
+              <em>/</em>
+              <b className="negative">{shortCandidates.length}</b>
+            </strong>
+            <small>롱 / 숏</small>
+          </div>
+          <div className="strategy-tile">
+            <span>기준 점수</span>
+            <strong>{fmtNum(config.min_score, 0)}</strong>
+            <small>{config.backtest_auto_settings ? "백테스트 자동 반영" : "수동 고정"}</small>
+          </div>
+          <div className="strategy-tile wide">
+            <span>최우선 후보</span>
+            <strong>{bestCandidate ? bestCandidate.inst_id : "—"}</strong>
+            <small>
+              {bestCandidate
+                ? `${bestCandidate.outlook || "neutral"} · ${fmtNum(bestCandidate.score, 1)}점 · ${bestCandidate.reasons.slice(-3).join(" / ")}`
+                : "스캔 후 표시"}
+            </small>
+          </div>
+          <div className="strategy-tile wide">
+            <span>백테스트 루프</span>
+            <strong>{btStatus?.running ? "실행 중" : btResult ? "최근 완료" : "대기"}</strong>
+            <small>
+              {btResult?.metrics
+                ? `승률 ${btResult.metrics.win_rate}% · 거래 ${btResult.metrics.trade_count}건 · PnL ${fmtUsd(btResult.metrics.total_pnl, 2)}`
+                : `최근 ${config.backtest_period_months ?? 3}개월 · 주기 ${config.backtest_interval_minutes ?? 60}분`}
+            </small>
+          </div>
+        </div>
+        <div className="strategy-flags">
+          {safetyTags.map((tag) => (
+            <span key={tag}>{tag}</span>
+          ))}
+        </div>
+        {latestDecision && (
+          <div className="strategy-latest-decision">
+            <span>{latestDecision.ts?.slice(11, 19)}</span>
+            {latestDecision.message}
+          </div>
+        )}
+      </section>
 
       <div className="section">
         <h2>보유 포지션 ({portfolio.positions.length}) — 행 클릭 또는 「차트」</h2>
@@ -1343,10 +1470,10 @@ function ManualTradingPanel({
   const [selected, setSelected] = useState("BTC-USDT-SWAP");
   const [orderType, setOrderType] = useState<"market" | "limit">("market");
   const [limitPrice, setLimitPrice] = useState("");
-  const [sizeUsdt, setSizeUsdt] = useState(config.order_size_usdt || 10);
+  const [sizeUsdt, setSizeUsdt] = useState<number | "">(config.order_size_usdt || 10);
   const [leverage, setLeverage] = useState(config.leverage || 10);
-  const [slPct, setSlPct] = useState(config.stop_loss_pct || 6);
-  const [tpPct, setTpPct] = useState(config.take_profit_pct || 12);
+  const [slPct, setSlPct] = useState<number | "">(config.stop_loss_pct || 6);
+  const [tpPct, setTpPct] = useState<number | "">(config.take_profit_pct || 12);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const selectedRow = symbols.find((s) => s.inst_id === selected);
@@ -1378,18 +1505,29 @@ function ManualTradingPanel({
       setMsg("지정가를 입력하세요");
       return;
     }
+    const sizeNum = Number(sizeUsdt);
+    const slNum = Number(slPct);
+    const tpNum = Number(tpPct);
+    if (!Number.isFinite(sizeNum) || sizeNum <= 0) {
+      setMsg("진입 금액을 입력하세요");
+      return;
+    }
+    if (!Number.isFinite(slNum) || slNum <= 0 || !Number.isFinite(tpNum) || tpNum <= 0) {
+      setMsg("손절/익절 값을 입력하세요");
+      return;
+    }
     setBusy(true);
     setMsg("");
     try {
       const res = await manualOrder(
         selected,
         side,
-        Number(sizeUsdt),
+        sizeNum,
         Number(leverage),
         orderType,
         orderType === "limit" ? px : 0,
-        Number(slPct),
-        Number(tpPct),
+        slNum,
+        tpNum,
       );
       setMsg(res.ok ? (res.message || "주문 완료") : (res.message || "주문 실패"));
       onRefresh();
@@ -1400,8 +1538,8 @@ function ManualTradingPanel({
     }
   };
 
-  const slMove = leverage > 0 ? slPct / leverage : slPct;
-  const tpMove = leverage > 0 ? tpPct / leverage : tpPct;
+  const slMove = leverage > 0 ? Number(slPct || 0) / leverage : Number(slPct || 0);
+  const tpMove = leverage > 0 ? Number(tpPct || 0) / leverage : Number(tpPct || 0);
 
   return (
     <div className="manual-trade-layout">
@@ -1461,7 +1599,7 @@ function ManualTradingPanel({
         <label>지정가</label>
         <input type="number" step="any" value={limitPrice} disabled={orderType === "market"} onChange={(e) => setLimitPrice(e.target.value)} />
         <label>진입 금액 (명목 USDT)</label>
-        <input type="number" min={0} step="any" value={sizeUsdt} onChange={(e) => setSizeUsdt(Number(e.target.value))} />
+        <input type="number" min={0} step="any" value={sizeUsdt} onChange={(e) => setSizeUsdt(e.target.value === "" ? "" : Number(e.target.value))} />
         <label>레버리지</label>
         <div className="manual-leverage-list">
           {leverageOptions.map((lev) => (
@@ -1476,9 +1614,9 @@ function ManualTradingPanel({
           ))}
         </div>
         <label>손절 PnL ROI%</label>
-        <input type="number" min={0.1} step="any" value={slPct} onChange={(e) => setSlPct(Number(e.target.value))} />
+        <input type="number" min={0.1} step="any" value={slPct} onChange={(e) => setSlPct(e.target.value === "" ? "" : Number(e.target.value))} />
         <label>익절 PnL ROI%</label>
-        <input type="number" min={0.1} step="any" value={tpPct} onChange={(e) => setTpPct(Number(e.target.value))} />
+        <input type="number" min={0.1} step="any" value={tpPct} onChange={(e) => setTpPct(e.target.value === "" ? "" : Number(e.target.value))} />
         <p className="settings-hint">
           {leverage}x 기준 가격폭: 손절 약 {fmtNum(slMove, 2)}%, 익절 약 {fmtNum(tpMove, 2)}%.
         </p>
