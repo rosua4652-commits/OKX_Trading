@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.models import InstrumentType, PositionSide
+from app.models import InstrumentType, PositionSide, StrategyMode
 
 
 def pnl_pct_to_price_pct(
@@ -38,6 +38,30 @@ def leverage_safe_sl_pct(
     lev = max(1, leverage)
     max_price_move_pct = max(0.2, (100 / lev) * 0.65)
     return min(sl_pct, max_price_move_pct * lev)
+
+
+def enforce_wide_rr_sl_tp(
+    sl_pct: float,
+    tp_pct: float,
+    leverage: int = 1,
+    instrument_type: InstrumentType | str | None = None,
+    strategy: StrategyMode | str | None = None,
+    rr: float = 2.0,
+) -> tuple[float, float]:
+    """Normalize automatic SL/TP in user-facing PnL ROI%."""
+    is_swing = strategy in (StrategyMode.SWING, "swing")
+    min_sl = 8.0 if is_swing else 4.0
+    max_sl = leverage_safe_sl_pct(12.0 if is_swing else 10.0, leverage, instrument_type)
+    if max_sl < min_sl:
+        min_sl = max(0.5, max_sl)
+
+    effective_rr = max(rr, 1.6) if is_swing else min(max(rr, 1.15), 1.6)
+    tp_cap = 24.0 if is_swing else 10.0
+    sl = max(abs(float(sl_pct or 0)), min_sl)
+    sl = min(sl, max_sl)
+    tp = max(abs(float(tp_pct or 0)), sl * effective_rr)
+    tp = min(tp, max(tp_cap, sl * effective_rr))
+    return round(sl, 2), round(tp, 2)
 
 
 def sl_tp_prices_from_pct(

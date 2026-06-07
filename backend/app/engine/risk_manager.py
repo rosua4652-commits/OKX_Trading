@@ -44,9 +44,14 @@ def check_entry_allowed(
         if pos.inst_id == candidate.inst_id:
             return False, "already holding this instrument"
 
-    daily_loss_limit = portfolio.balance * 0.05
-    if portfolio.realized_pnl < -daily_loss_limit:
-        return False, "daily loss limit exceeded"
+    if config.daily_loss_limit_enabled:
+        pct_limit = portfolio.balance * max(0.0, config.daily_loss_limit_pct) / 100.0
+        daily_loss_limit = max(pct_limit, max(0.0, config.daily_loss_limit_min_usdt))
+        if daily_loss_limit > 0 and portfolio.realized_pnl < -daily_loss_limit:
+            return (
+                False,
+                f"daily loss limit exceeded (${abs(portfolio.realized_pnl):.2f}/${daily_loss_limit:.2f})",
+            )
 
     strat = strategy or config.strategy_mode
     if strat == StrategyMode.BOTH:
@@ -59,6 +64,12 @@ def check_entry_allowed(
             return False, "short entries are disabled"
         if config.instrument_type == InstrumentType.SPOT:
             return False, "spot short entries are not supported"
+        if candidate.trend != "down":
+            return False, f"short trend mismatch ({candidate.trend})"
+        if candidate.score < config.min_score:
+            return False, f"short score too low ({candidate.score} < {config.min_score})"
+        if candidate.rsi < 45:
+            return False, f"short RSI not confirmed ({candidate.rsi})"
         if strat == StrategyMode.SCALP:
             if not candidate.short_scalp_ok and candidate.outlook != "short":
                 return False, f"short scalp conditions not met (score={candidate.score})"
@@ -72,6 +83,9 @@ def check_entry_allowed(
         if candidate.trend not in ("down", "sideways"):
             return False, f"short trend mismatch ({candidate.trend})"
         return True, "OK (숏)"
+
+    if candidate.trend not in ("strong_up", "up"):
+        return False, f"long trend mismatch ({candidate.trend})"
 
     if strat == StrategyMode.SCALP:
         if not candidate.scalp_ok:

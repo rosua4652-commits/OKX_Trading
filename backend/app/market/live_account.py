@@ -9,7 +9,8 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from app.market.okx_client import get_okx_client
-from app.contract_sizing import swap_margin_usdt
+from app.contract_sizing import swap_margin_usdt, swap_notional_usdt
+from app.market.instrument_rules import swap_sizing_rules
 from app.models import (
     AppConfig,
     InstrumentType,
@@ -138,6 +139,7 @@ def _okx_to_position(
         auto_disabled = existing.auto_sl_tp_disabled
         sl_disabled = existing.auto_sl_disabled
         tp_disabled = existing.auto_tp_disabled
+        profit_protect_disabled = existing.auto_profit_protect_disabled
         manual = existing.sl_tp_manual
         manual_sl = existing.stop_loss
         manual_tp = existing.take_profit
@@ -160,6 +162,7 @@ def _okx_to_position(
         auto_disabled = False
         sl_disabled = False
         tp_disabled = False
+        profit_protect_disabled = False
         manual = False
         manual_sl = manual_tp = manual_sl_pct = manual_tp_pct = 0.0
         manual_sl_usdt = manual_tp_usdt = 0.0
@@ -201,6 +204,7 @@ def _okx_to_position(
         auto_sl_tp_disabled=auto_disabled,
         auto_sl_disabled=sl_disabled,
         auto_tp_disabled=tp_disabled,
+        auto_profit_protect_disabled=profit_protect_disabled,
         trailing_high=mark,
         strategy_mode=strategy,
         instrument_type=config.instrument_type,
@@ -224,6 +228,62 @@ def _ts_to_iso(ts: str) -> str:
         return utc_now_iso()
 
 
+def _iso_to_ms(value: str) -> int:
+    if not value:
+        return 0
+    try:
+        normalized = value.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1000)
+    except Exception:
+        return 0
+
+
+def _fill_notional_usdt(raw: dict, config: AppConfig, inst_id: str, px: float, qty: float) -> float:
+    notional = _abs_float(raw.get("fillNotionalUsd") or raw.get("notionalUsd"))
+    if notional > 0:
+        return notional
+    if px <= 0 or qty <= 0:
+        return 0.0
+    if config.instrument_type != InstrumentType.SPOT:
+        try:
+            rules = swap_sizing_rules(config, inst_id)
+            return swap_notional_usdt(qty, px, rules.ct_val)
+        except Exception:
+            return 0.0
+    return px * qty
+
+
+def _looks_like_existing_close(
+    portfolio,
+    inst_id: str,
+    side: str,
+    pos_side: str,
+    px: float,
+    qty: float,
+    pnl: float,
+    fill_ms: int,
+) -> bool:
+    if not fill_ms:
+        return False
+    for trade in reversed(portfolio.trades[-120:]):
+        if trade.inst_id != inst_id or trade.side != side:
+            continue
+        if pos_side and trade.position_side and trade.position_side != pos_side:
+            continue
+        trade_ms = _iso_to_ms(str(trade.ts))
+        if not trade_ms or abs(fill_ms - trade_ms) > 120_000:
+            continue
+        qty_close = qty > 0 and abs(float(trade.quantity) - qty) <= max(qty * 0.02, 1e-9)
+        price_close = px > 0 and trade.price > 0 and abs(float(trade.price) - px) / px <= 0.02
+        pnl_close = abs(float(trade.pnl) - pnl) <= max(abs(pnl) * 0.15, 0.01)
+        if qty_close or (price_close and pnl_close):
+            return True
+    return False
+
+
 def _sync_recent_fills(portfolio, client, config: AppConfig, force: bool = False) -> None:
     global _last_fills_sync
     now = time.monotonic()
@@ -240,7 +300,12 @@ def _sync_recent_fills(portfolio, client, config: AppConfig, force: bool = False
         for t in portfolio.trades
     }
     added: list[TradeRecord] = []
+    reset_ms = _iso_to_ms(getattr(portfolio, "stats_reset_at", ""))
     for f in fills:
+        fill_ms = int(_float(f.get("ts"), 0))
+        if reset_ms and fill_ms and fill_ms <= reset_ms:
+            continue
+
         signed_pnl = _float(f.get("fillPnl") or f.get("pnl"))
         if signed_pnl == 0:
             continue
@@ -263,7 +328,9 @@ def _sync_recent_fills(portfolio, client, config: AppConfig, force: bool = False
             pos_side = pos_side_raw
         else:
             pos_side = "long" if side == "sell" else "short"
-        notional = _abs_float(f.get("fillNotionalUsd") or f.get("notionalUsd")) or px * qty
+        if _looks_like_existing_close(portfolio, inst_id, side, pos_side, px, qty, signed_pnl, fill_ms):
+            continue
+        notional = _fill_notional_usdt(f, config, inst_id, px, qty)
         if config.instrument_type != InstrumentType.SPOT:
             pct_base = swap_margin_usdt(notional, config.leverage)
         else:

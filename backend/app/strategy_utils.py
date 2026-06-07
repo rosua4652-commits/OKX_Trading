@@ -18,4 +18,6 @@ def sl_tp_pcts(config: AppConfig, strategy: StrategyMode) -> tuple[float, float]
     if strategy == StrategyMode.SWING:
         sl = config.stop_loss_pct if config.stop_loss_pct > 0 else settings.swing_stop_loss_pct
         tp = config.take_profit_pct if config.take_profit_pct > 0 else settings.swing_take_profit_pct
+    else:
+        tp = min(tp, 10.0)
     return sl, tp

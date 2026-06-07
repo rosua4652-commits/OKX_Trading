@@ -60,6 +60,9 @@ class AppConfig(BaseModel):
     position_side: PositionSideMode = PositionSideMode.AUTO
     scan_symbols: list[str] = Field(default_factory=lambda: ["BTC-USDT-SWAP", "ETH-USDT-SWAP"])
     min_score: float = 55.0
+    daily_loss_limit_enabled: bool = True
+    daily_loss_limit_pct: float = Field(default=5.0, ge=0.0, le=100.0)
+    daily_loss_limit_min_usdt: float = Field(default=3.0, ge=0.0)
     backtest_auto_settings: bool = False
     backtest_auto_sl_tp: bool = False
     trend_scale_in: bool = True
@@ -94,6 +97,7 @@ class Position(BaseModel):
     auto_sl_tp_disabled: bool = False
     auto_sl_disabled: bool = False
     auto_tp_disabled: bool = False
+    auto_profit_protect_disabled: bool = False
     trailing_high: float = 0.0
     strategy_mode: StrategyMode = StrategyMode.SCALP
     instrument_type: InstrumentType = InstrumentType.SWAP
@@ -206,6 +210,8 @@ class ManualOrderRequest(BaseModel):
     leverage: int = 3
     order_type: str = "market"
     price: float = 0.0
+    stop_loss_pct: float = 0.0
+    take_profit_pct: float = 0.0
 
 
 class ConfigUpdateRequest(BaseModel):

@@ -16,6 +16,7 @@ export interface Position {
   auto_sl_tp_disabled?: boolean;
   auto_sl_disabled?: boolean;
   auto_tp_disabled?: boolean;
+  auto_profit_protect_disabled?: boolean;
   unrealized_pnl: number;
   unrealized_pnl_pct: number;
   entry_reason: string;
@@ -80,6 +81,9 @@ export interface AppConfig {
   trailing_stop: boolean;
   allow_short: boolean;
   min_score: number;
+  daily_loss_limit_enabled?: boolean;
+  daily_loss_limit_pct?: number;
+  daily_loss_limit_min_usdt?: number;
   backtest_auto_settings?: boolean;
   backtest_auto_sl_tp?: boolean;
   trend_scale_in?: boolean;
@@ -251,6 +255,32 @@ export interface BacktestResult {
   logs?: BacktestLogEntry[];
   error?: string;
   symbol_profiles?: Record<string, SymbolSlTpProfile>;
+  zone_walkforward?: BacktestZoneWalkForward;
+}
+
+export interface BacktestZoneWalkForward {
+  symbols: number;
+  samples: number;
+  accuracy_pct: number;
+  long_accuracy_pct: number;
+  short_accuracy_pct: number;
+  avg_forward_r: number;
+  breakout_success_pct: number;
+  false_break_pct: number;
+  details: {
+    inst_id: string;
+    bar: number;
+    direction: string;
+    reason: string;
+    entry: number;
+    atr_pct: number;
+    support: number;
+    resistance: number;
+    width_atr: number;
+    forward_r: number;
+    hit: boolean;
+    false_break: boolean;
+  }[];
 }
 
 export interface BacktestStatus {
@@ -282,6 +312,7 @@ export interface BacktestHistoryEntry {
   applied_sl_pct?: number;
   applied_tp_pct?: number;
   exit_stats?: { sl: number; tp: number; end_close: number; trailing: number; other: number };
+  zone_walkforward?: BacktestZoneWalkForward;
   error?: string;
 }
 
@@ -290,6 +321,26 @@ export interface BacktestBundle {
   result: BacktestResult | null;
   history?: BacktestHistoryEntry[];
   symbol_profiles?: SymbolSlTpProfile[];
+  auto_apply_history?: {
+    ts: string;
+    result_id: string;
+    accepted: boolean;
+    reason: string;
+    metrics?: BacktestMetrics;
+    zone_walkforward?: BacktestZoneWalkForward;
+    before?: {
+      min_score: number;
+      stop_loss_pct: number;
+      take_profit_pct: number;
+      backtest_auto_settings: boolean;
+      backtest_auto_sl_tp: boolean;
+    };
+    after?: {
+      min_score: number;
+      stop_loss_pct: number;
+      take_profit_pct: number;
+    } | null;
+  }[];
   auto_run?: boolean;
   interval_sec?: number;
   interval_minutes?: number;

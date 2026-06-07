@@ -8,7 +8,12 @@ import numpy as np
 
 from app.market.data_provider import market
 from app.models import AppConfig, InstrumentType, PositionSide, StrategyMode
-from app.sl_tp_utils import leverage_safe_sl_pct, pnl_pct_to_price_pct, price_pct_to_pnl_pct
+from app.sl_tp_utils import (
+    enforce_wide_rr_sl_tp,
+    leverage_safe_sl_pct,
+    pnl_pct_to_price_pct,
+    price_pct_to_pnl_pct,
+)
 from app.strategy_utils import sl_tp_pcts
 
 
@@ -113,19 +118,19 @@ def _plan_from_ohlc(
     recent_low = float(np.min(lows[-lookback:]))
 
     leverage = max(1, config.leverage or 1)
-    min_sl_roi = 3.0 if strategy == StrategyMode.SWING else 2.0
+    min_sl_roi = 8.0 if strategy == StrategyMode.SWING else 6.0
     max_sl_roi = min(
         _liquidity_sl_cap(volume_usdt, strategy),
         _leverage_safe_sl_cap(leverage, config.instrument_type),
     )
-    min_tp_roi = 7.0 if strategy == StrategyMode.SWING else 5.0
-    max_tp_roi = max(8.0, max_sl_roi * 2.2)
-    sl_atr_mult = 2.2 if strategy == StrategyMode.SWING else 1.4
-    rr_base = 2.8 if strategy == StrategyMode.SWING else 1.9
+    min_tp_roi = 7.0 if strategy == StrategyMode.SWING else max(5.0, min_sl_roi * 1.15)
+    max_tp_roi = 24.0 if strategy == StrategyMode.SWING else 10.0
+    sl_atr_mult = 2.6 if strategy == StrategyMode.SWING else 2.0
+    rr_base = 2.2 if strategy == StrategyMode.SWING else 1.35
 
     ema = float(np.mean(closes[-min(20, len(closes)):]))
     trend_strength = abs(closes[-1] - ema) / ema * 100 if ema > 0 else 0
-    rr = _clamp(rr_base + trend_strength * 0.08, rr_base, rr_base + 1.2)
+    rr = _clamp(rr_base + trend_strength * 0.05, rr_base, rr_base + (0.8 if strategy == StrategyMode.SWING else 0.35))
 
     if side == PositionSide.LONG:
         struct_sl_price_pct = (entry - recent_low) / entry * 100.0 if entry > 0 else 0.0
@@ -150,6 +155,14 @@ def _plan_from_ohlc(
         price_pct_to_pnl_pct(raw_tp_price_pct, leverage, config.instrument_type),
         min_tp_roi,
         max_tp_roi,
+    )
+    sl_pct, tp_pct = enforce_wide_rr_sl_tp(
+        sl_pct,
+        tp_pct,
+        leverage,
+        config.instrument_type,
+        strategy,
+        rr=rr,
     )
     sl_price_pct = pnl_pct_to_price_pct(sl_pct, leverage, config.instrument_type)
     tp_price_pct = pnl_pct_to_price_pct(tp_pct, leverage, config.instrument_type)
@@ -187,6 +200,14 @@ def _fallback_plan(
     fb_sl, fb_tp = sl_tp_pcts(config, strategy)
     leverage = max(1, config.leverage or 1)
     fb_sl = leverage_safe_sl_pct(fb_sl, leverage, config.instrument_type)
+    fb_sl, fb_tp = enforce_wide_rr_sl_tp(
+        fb_sl,
+        fb_tp,
+        leverage,
+        config.instrument_type,
+        strategy,
+        rr=1.35 if strategy == StrategyMode.SCALP else 1.8,
+    )
     sl_price_pct = pnl_pct_to_price_pct(fb_sl, leverage, config.instrument_type)
     tp_price_pct = pnl_pct_to_price_pct(fb_tp, leverage, config.instrument_type)
     if side == PositionSide.LONG:
@@ -237,6 +258,14 @@ async def compute_dynamic_sl_tp(
     bt = resolve_entry_sl_tp(inst_id, cfg, strategy)
     if bt is not None:
         sl_pct, tp_pct, method = bt
+        sl_pct, tp_pct = enforce_wide_rr_sl_tp(
+            sl_pct,
+            tp_pct,
+            cfg.leverage,
+            cfg.instrument_type,
+            strategy,
+            rr=1.35 if strategy == StrategyMode.SCALP else 1.8,
+        )
         sl_p, tp_p = plan_prices(entry, side, sl_pct, tp_pct, cfg.leverage)
         return DynamicSlTpPlan(
             stop_loss=round(sl_p, 12),

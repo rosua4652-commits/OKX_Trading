@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { applyBacktest, fetchBacktestStatus, runBacktest, updateConfig } from "./api";
 import { BacktestCandlesGrid, TradeMiniCandle } from "./BacktestCandles";
 import { fmtNum, fmtPrice, fmtUsd } from "./format";
-import type { AppConfig, BacktestBundle } from "./types";
+import type { AppConfig, BacktestBundle, BacktestHistoryEntry, SymbolSlTpProfile } from "./types";
 
 export function BacktestPanel({
   config,
@@ -25,6 +25,26 @@ export function BacktestPanel({
     bundle?.interval_minutes ?? config.backtest_interval_minutes ?? 60;
   const saveIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveCandleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 패널 깜빡임 방지: 마지막으로 알려진 symbol_profiles를 보존
+  const stableProfilesRef = useRef<SymbolSlTpProfile[]>(bundle?.symbol_profiles ?? []);
+  if ((bundle?.symbol_profiles?.length ?? 0) > 0) {
+    stableProfilesRef.current = bundle!.symbol_profiles!;
+  }
+  const stableProfiles = stableProfilesRef.current;
+
+  // 자동 설정 반영 내역도 동일하게 안정화
+  const stableAutoHistRef = useRef<NonNullable<BacktestBundle["auto_apply_history"]>>(bundle?.auto_apply_history ?? []);
+  if ((bundle?.auto_apply_history?.length ?? 0) > 0) {
+    stableAutoHistRef.current = bundle!.auto_apply_history!;
+  }
+  const stableAutoHist = stableAutoHistRef.current;
+
+  // 실행 이력도 안정화
+  const stableHistoryRef = useRef<BacktestHistoryEntry[]>(bundle?.history ?? []);
+  if ((bundle?.history?.length ?? 0) > 0) {
+    stableHistoryRef.current = bundle!.history!;
+  }
+  const stableHistory = stableHistoryRef.current;
 
   const scheduleIntervalSave = useCallback(
     (minutes: number) => {
@@ -105,6 +125,7 @@ export function BacktestPanel({
 
   const rec = result?.recommendation;
   const m = result?.metrics;
+  const z = result?.zone_walkforward;
 
   return (
     <div className="backtest-panel">
@@ -195,7 +216,47 @@ export function BacktestPanel({
         )}
       </p>
 
-      {(bundle?.symbol_profiles?.length ?? 0) > 0 && (
+      {(stableAutoHist.length ?? 0) > 0 && (
+        <div className="section">
+          <h2>자동 설정 반영 내역</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>시각</th>
+                <th>결과</th>
+                <th>사유</th>
+                <th>백테스트</th>
+                <th>변경값</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stableAutoHist.map((h) => (
+                <tr key={`${h.result_id}-${h.ts}`}>
+                  <td>{new Date(h.ts).toLocaleString()}</td>
+                  <td>
+                    <span className={`badge ${h.accepted ? "running" : "stopped"}`}>
+                      {h.accepted ? "적용" : "보류"}
+                    </span>
+                  </td>
+                  <td>{h.reason}</td>
+                  <td>
+                    PnL {h.metrics?.total_pnl != null ? fmtUsd(h.metrics.total_pnl, 2) : "—"} ·
+                    승률 {h.metrics?.win_rate != null ? `${fmtNum(h.metrics.win_rate, 1)}%` : "—"} ·
+                    거래 {h.metrics?.trade_count ?? 0}건
+                  </td>
+                  <td>
+                    {h.after
+                      ? `score ${h.before?.min_score}→${h.after.min_score}, SL ${h.before?.stop_loss_pct}→${h.after.stop_loss_pct}, TP ${h.before?.take_profit_pct}→${h.after.take_profit_pct}`
+                      : "변경 없음"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {(stableProfiles.length ?? 0) > 0 && (
         <div className="section">
           <h2>종목별 SL/TP 프로필 (자동매매 적용)</h2>
           <div className="bt-dir-scroll">
@@ -211,7 +272,7 @@ export function BacktestPanel({
                 </tr>
               </thead>
               <tbody>
-                {(bundle?.symbol_profiles ?? [])
+                {stableProfiles
                   .sort((a, b) => b.win_rate - a.win_rate)
                   .map((p) => (
                     <tr key={p.inst_id}>
@@ -233,9 +294,9 @@ export function BacktestPanel({
         </div>
       )}
 
-      {(bundle?.history?.length ?? 0) > 0 && (
+      {(stableHistory.length ?? 0) > 0 && (
         <div className="section">
-          <h2>실행 이력 ({bundle?.history?.length})</h2>
+          <h2>실행 이력 ({stableHistory.length})</h2>
           <table>
             <thead>
               <tr>
@@ -251,7 +312,7 @@ export function BacktestPanel({
               </tr>
             </thead>
             <tbody>
-              {bundle?.history?.map((h) => (
+              {stableHistory.map((h) => (
                 <tr key={`${h.id}-${h.finished_at}`}>
                   <td className="ts-cell">{h.finished_at?.slice(0, 19).replace("T", " ")}</td>
                   <td title={h.error || undefined}>
@@ -372,6 +433,79 @@ export function BacktestPanel({
               </div>
             </div>
           </div>
+
+          {z && z.samples > 0 && (
+            <div className="section">
+              <h2>ATR·구조 구간 예측 검증</h2>
+              <div className="grid backtest-summary">
+                <div className="card">
+                  <h3>구간 정확도</h3>
+                  <div className={`value ${z.accuracy_pct >= 50 ? "positive" : "negative"}`}>
+                    {fmtNum(z.accuracy_pct, 1)}%
+                  </div>
+                  <div className="sub">{z.samples}개 예측 · {z.symbols}종목</div>
+                </div>
+                <div className="card">
+                  <h3>롱 / 숏 정확도</h3>
+                  <div className="value">
+                    {fmtNum(z.long_accuracy_pct, 1)}% / {fmtNum(z.short_accuracy_pct, 1)}%
+                  </div>
+                  <div className="sub">앞봉 예측 후 다음 12봉 검증</div>
+                </div>
+                <div className="card">
+                  <h3>평균 Forward R</h3>
+                  <div className={`value ${z.avg_forward_r >= 0 ? "positive" : "negative"}`}>
+                    {fmtNum(z.avg_forward_r, 2)}R
+                  </div>
+                  <div className="sub">ATR 기준 유리 진행폭</div>
+                </div>
+                <div className="card">
+                  <h3>실패돌파</h3>
+                  <div className={`value ${z.false_break_pct <= 30 ? "positive" : "negative"}`}>
+                    {fmtNum(z.false_break_pct, 1)}%
+                  </div>
+                  <div className="sub">돌파 예측 후 반대 ATR 먼저 터진 비율</div>
+                </div>
+              </div>
+              <div className="sub">
+                앞 80봉으로 지지/저항·ATR·EMA 기울기·MACD를 판단하고, 다음 12봉에서 1ATR 이상 유리하게 진행됐는지 비교합니다.
+              </div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>종목</th>
+                    <th>방향</th>
+                    <th>근거</th>
+                    <th>ATR%</th>
+                    <th>박스폭</th>
+                    <th>결과</th>
+                    <th>Forward R</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(z.details ?? []).slice(0, 20).map((d, i) => (
+                    <tr key={`${d.inst_id}-${d.bar}-${i}`}>
+                      <td>{d.inst_id}</td>
+                      <td>
+                        <span className={`badge ${d.direction === "long" ? "long" : "short"}`}>
+                          {d.direction.toUpperCase()}
+                        </span>
+                      </td>
+                      <td>{d.reason}</td>
+                      <td>{fmtNum(d.atr_pct, 2)}%</td>
+                      <td>{fmtNum(d.width_atr, 2)} ATR</td>
+                      <td className={d.hit ? "positive" : d.false_break ? "negative" : ""}>
+                        {d.hit ? "적중" : d.false_break ? "실패돌파" : "미확정"}
+                      </td>
+                      <td className={d.forward_r >= 0 ? "positive" : "negative"}>
+                        {fmtNum(d.forward_r, 2)}R
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
 
           <BacktestCandlesGrid result={result} />
 

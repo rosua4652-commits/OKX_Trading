@@ -76,7 +76,7 @@ export async function resetPositionSlTpAuto(
 
 export async function setPositionAutoSlTpDisabled(
   instId: string,
-  body: { disabled?: boolean; sl_disabled?: boolean; tp_disabled?: boolean },
+  body: { disabled?: boolean; sl_disabled?: boolean; tp_disabled?: boolean; profit_protect_disabled?: boolean },
 ): Promise<{ ok: boolean; message?: string }> {
   const res = await fetch(`${BASE}/api/position/sl-tp/disabled`, {
     method: "POST",
@@ -158,6 +158,14 @@ export async function resetPaper(initialBalance?: number) {
   }>;
 }
 
+export async function resetTradeStats() {
+  const res = await fetch(`${BASE}/api/portfolio/stats/reset`, { method: "POST" });
+  return res.json() as Promise<{
+    ok: boolean;
+    message: string;
+  }>;
+}
+
 export async function testConnection() {
   const res = await fetch(`${BASE}/api/test-connection`, { method: "POST" });
   return res.json();
@@ -190,6 +198,20 @@ export async function setPositionSide(mode: string) {
   return res.json();
 }
 
+export async function searchSymbols(q: string, limit = 20): Promise<{
+  symbols: {
+    inst_id: string;
+    last: number;
+    change_24h_pct: number;
+    volume_24h_usdt: number;
+    leverage_options?: number[];
+  }[];
+}> {
+  const params = new URLSearchParams({ q, limit: String(limit) });
+  const res = await fetch(`${BASE}/api/symbols/search?${params}`);
+  return res.json();
+}
+
 export async function manualOrder(
   instId: string,
   side: "long" | "short",
@@ -197,6 +219,8 @@ export async function manualOrder(
   leverage: number,
   orderType = "market",
   price = 0,
+  stopLossPct = 0,
+  takeProfitPct = 0,
 ) {
   const res = await fetch(`${BASE}/api/order/manual`, {
     method: "POST",
@@ -208,6 +232,8 @@ export async function manualOrder(
       leverage,
       order_type: orderType,
       price,
+      stop_loss_pct: stopLossPct,
+      take_profit_pct: takeProfitPct,
     }),
   });
   return res.json();

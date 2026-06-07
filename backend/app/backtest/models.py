@@ -62,6 +62,18 @@ class BacktestSlTpTrial(BaseModel):
     sl_hits: int = 0
 
 
+class BacktestZoneWalkForward(BaseModel):
+    symbols: int = 0
+    samples: int = 0
+    accuracy_pct: float = 0.0
+    long_accuracy_pct: float = 0.0
+    short_accuracy_pct: float = 0.0
+    avg_forward_r: float = 0.0
+    breakout_success_pct: float = 0.0
+    false_break_pct: float = 0.0
+    details: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class BacktestRecommendation(BaseModel):
     min_score: float
     reason: str
@@ -116,6 +128,7 @@ class BacktestResult(BaseModel):
     logs: list[BacktestLogEntry] = Field(default_factory=list)
     error: str = ""
     symbol_profiles: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    zone_walkforward: BacktestZoneWalkForward = Field(default_factory=BacktestZoneWalkForward)
 
 
 class BacktestStatus(BaseModel):

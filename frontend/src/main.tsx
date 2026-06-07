@@ -8,7 +8,9 @@ import {
   fetchTrades,
   manualOrder,
   resetPaper,
+  resetTradeStats,
   scanNow,
+  searchSymbols,
   setPositionSide,
   setStrategy,
   setTradeMode,
@@ -37,6 +39,7 @@ import { BacktestPanel } from "./BacktestPanel";
 import { AssetAllocationPanel } from "./AssetAllocation";
 import { PositionSlTpEditor } from "./PositionSlTpEditor";
 import { RsiGauge } from "./Sparkline";
+import { TradingViewChart } from "./TradingViewChart";
 import type { AppConfig, CoinCandidate, Position, StatusData, TradeRecord } from "./types";
 import "./index.css";
 
@@ -48,7 +51,7 @@ function App() {
   const [expandedCandidateId, setExpandedCandidateId] = useState<string | null>(null);
   const [chartTarget, setChartTarget] = useState<ChartViewTarget | null>(null);
   const [configSaveStatus, setConfigSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
-  const [mainTab, setMainTab] = useState<"trade" | "exits" | "backtest">("trade");
+  const [mainTab, setMainTab] = useState<"trade" | "manual" | "exits" | "backtest">("trade");
   const [exitFilter, setExitFilter] = useState<"all" | "sl" | "tp" | "other">("all");
   const configLockedRef = useRef(false);
   const refreshInFlightRef = useRef(false);
@@ -368,6 +371,13 @@ function App() {
           onClick={() => setMainTab("trade")}
         >
           매매 · 포지션
+        </button>
+        <button
+          type="button"
+          className={mainTab === "manual" ? "active" : ""}
+          onClick={() => setMainTab("manual")}
+        >
+          수동 거래
         </button>
         <button
           type="button"
@@ -721,6 +731,51 @@ function App() {
               <input type="number" value={config.max_positions}
                 onChange={(e) => patchConfig({ max_positions: Number(e.target.value) })} />
             </div>
+            <div className="settings-row settings-check-block">
+              <label className="settings-check">
+                <input
+                  type="checkbox"
+                  checked={config.daily_loss_limit_enabled !== false}
+                  onChange={(e) => patchConfig({ daily_loss_limit_enabled: e.target.checked })}
+                />
+                <span>
+                  <strong>일일 손실 제한</strong>
+                  <br />
+                  <span className="settings-check-desc">
+                    켜두면 오늘 실현손익이 설정 한도보다 나빠질 때 신규 진입을 막습니다.
+                  </span>
+                </span>
+              </label>
+            </div>
+            <div className="settings-row">
+              <label>일일 손실 제한 %</label>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step="0.1"
+                value={config.daily_loss_limit_pct ?? 5}
+                disabled={config.daily_loss_limit_enabled === false}
+                onChange={(e) => patchConfig({ daily_loss_limit_pct: Number(e.target.value) })}
+              />
+            </div>
+            <div className="settings-row">
+              <label>최소 허용 손실 USDT</label>
+              <input
+                type="number"
+                min={0}
+                step="0.1"
+                value={config.daily_loss_limit_min_usdt ?? 3}
+                disabled={config.daily_loss_limit_enabled === false}
+                onChange={(e) => patchConfig({ daily_loss_limit_min_usdt: Number(e.target.value) })}
+              />
+            </div>
+            <p style={{ fontSize: "0.75rem", color: "#8b949e", gridColumn: "1 / -1", marginTop: -6 }}>
+              현재 기준 차단선: 손실 {fmtUsd(Math.max(
+                portfolio.balance * ((config.daily_loss_limit_pct ?? 5) / 100),
+                config.daily_loss_limit_min_usdt ?? 3,
+              ), 2)} 이하. 끄면 일일 손실로 신규 진입을 막지 않습니다.
+            </p>
             <div className="settings-row">
               <label>진입 방향</label>
               <select
@@ -822,6 +877,8 @@ function App() {
           onConfigApplied={(minScore) => patchConfig({ min_score: minScore })}
           onPatchConfig={patchConfig}
         />
+      ) : mainTab === "manual" ? (
+        <ManualTradingPanel config={config} onRefresh={refresh} />
       ) : mainTab === "exits" ? (
         <ExitHistoryPanel
           trades={data.trades ?? []}
@@ -863,7 +920,24 @@ function App() {
           </div>
         </div>
         <div className="card">
-          <h3>실현 PnL / 승률</h3>
+          <div className="card-title-row">
+            <h3>실현 PnL / 승률</h3>
+            <button
+              className="reset-stats"
+              type="button"
+              onClick={async () => {
+                const ok = window.confirm(
+                  "포지션은 유지하고 실현 PnL, 거래 수, 승률, 실거래 학습 피드백만 초기화할까요?"
+                );
+                if (!ok) return;
+                const r = await resetTradeStats();
+                await refresh();
+                alert(r.message || (r.ok ? "초기화 완료" : "초기화 실패"));
+              }}
+            >
+              초기화
+            </button>
+          </div>
           <div className={`value ${portfolio.realized_pnl >= 0 ? "positive" : "negative"}`}>
             {portfolio.realized_pnl >= 0 ? "+" : ""}{fmtUsd(portfolio.realized_pnl, 2)}
           </div>
@@ -1248,6 +1322,172 @@ function ExitHistoryPanel({
           </table>
         )}
       </div>
+    </div>
+  );
+}
+
+function ManualTradingPanel({
+  config,
+  onRefresh,
+}: {
+  config: AppConfig;
+  onRefresh: () => void;
+}) {
+  const [symbols, setSymbols] = useState<{
+    inst_id: string;
+    last: number;
+    change_24h_pct: number;
+    volume_24h_usdt: number;
+    leverage_options?: number[];
+  }[]>([]);
+  const [selected, setSelected] = useState("BTC-USDT-SWAP");
+  const [orderType, setOrderType] = useState<"market" | "limit">("market");
+  const [limitPrice, setLimitPrice] = useState("");
+  const [sizeUsdt, setSizeUsdt] = useState(config.order_size_usdt || 10);
+  const [leverage, setLeverage] = useState(config.leverage || 10);
+  const [slPct, setSlPct] = useState(config.stop_loss_pct || 6);
+  const [tpPct, setTpPct] = useState(config.take_profit_pct || 12);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const selectedRow = symbols.find((s) => s.inst_id === selected);
+  const leverageOptions = selectedRow?.leverage_options?.length
+    ? selectedRow.leverage_options
+    : [1, 2, 3, 5, 10, 20, 30, 50, 75, 100, 125];
+
+  const doSearch = useCallback(async () => {
+    try {
+      const res = await searchSymbols("", 50);
+      const rows = res.symbols ?? [];
+      setSymbols(rows);
+      if (rows[0]?.inst_id && !rows.some((s) => s.inst_id === selected)) {
+        setSelected(rows[0].inst_id);
+        if (rows[0].leverage_options?.length && !rows[0].leverage_options.includes(leverage)) {
+          setLeverage(rows[0].leverage_options[Math.min(4, rows[0].leverage_options.length - 1)]);
+        }
+      }
+    } catch {
+      setMsg("종목 검색 실패");
+    }
+  }, [selected, leverage]);
+
+  useEffect(() => { doSearch(); }, []);
+
+  const submit = async (side: "long" | "short") => {
+    const px = Number(limitPrice);
+    if (orderType === "limit" && (!Number.isFinite(px) || px <= 0)) {
+      setMsg("지정가를 입력하세요");
+      return;
+    }
+    setBusy(true);
+    setMsg("");
+    try {
+      const res = await manualOrder(
+        selected,
+        side,
+        Number(sizeUsdt),
+        Number(leverage),
+        orderType,
+        orderType === "limit" ? px : 0,
+        Number(slPct),
+        Number(tpPct),
+      );
+      setMsg(res.ok ? (res.message || "주문 완료") : (res.message || "주문 실패"));
+      onRefresh();
+    } catch {
+      setMsg("주문 요청 실패");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const slMove = leverage > 0 ? slPct / leverage : slPct;
+  const tpMove = leverage > 0 ? tpPct / leverage : tpPct;
+
+  return (
+    <div className="manual-trade-layout">
+      <section className="section manual-chart-section">
+        <div className="manual-symbol-bar">
+          <button type="button" onClick={doSearch}>선물 목록 새로고침</button>
+        </div>
+        <div className="manual-symbol-list">
+          {(symbols.length ? symbols : [{ inst_id: selected, last: 0, change_24h_pct: 0, volume_24h_usdt: 0 }]).map((s) => (
+            <button
+              key={s.inst_id}
+              type="button"
+              className={selected === s.inst_id ? "active" : ""}
+              onClick={() => {
+                setSelected(s.inst_id);
+                if (s.leverage_options?.length && !s.leverage_options.includes(leverage)) {
+                  setLeverage(s.leverage_options[Math.min(4, s.leverage_options.length - 1)]);
+                }
+              }}
+            >
+              <strong>{s.inst_id}</strong>
+              <span>${fmtPrice(s.last)}</span>
+              <span className={s.change_24h_pct >= 0 ? "positive" : "negative"}>
+                {s.change_24h_pct >= 0 ? "+" : ""}{fmtNum(s.change_24h_pct, 1)}%
+              </span>
+              <small>${fmtVolumeUsdt(s.volume_24h_usdt)}</small>
+            </button>
+          ))}
+        </div>
+        <TradingViewChart instId={selected} strategy="scalp" height={620} />
+      </section>
+      <section className="section manual-order-panel">
+        <h2>수동 선물 주문</h2>
+        <div className="manual-selected">
+          <strong>{selected}</strong>
+          {selectedRow && (
+            <span className={selectedRow.change_24h_pct >= 0 ? "positive" : "negative"}>
+              ${fmtPrice(selectedRow.last)} · {selectedRow.change_24h_pct >= 0 ? "+" : ""}{fmtNum(selectedRow.change_24h_pct, 2)}%
+            </span>
+          )}
+        </div>
+        {selectedRow && (
+          <div className="manual-market-today">
+            <span>오늘 등락</span>
+            <strong className={selectedRow.change_24h_pct >= 0 ? "positive" : "negative"}>
+              {selectedRow.change_24h_pct >= 0 ? "+" : ""}{fmtNum(selectedRow.change_24h_pct, 2)}%
+            </strong>
+            <span>24h 거래대금</span>
+            <strong>${fmtVolumeUsdt(selectedRow.volume_24h_usdt)}</strong>
+          </div>
+        )}
+        <label>주문 방식</label>
+        <select value={orderType} onChange={(e) => setOrderType(e.target.value as "market" | "limit")}>
+          <option value="market">시장가</option>
+          <option value="limit">지정가</option>
+        </select>
+        <label>지정가</label>
+        <input type="number" step="any" value={limitPrice} disabled={orderType === "market"} onChange={(e) => setLimitPrice(e.target.value)} />
+        <label>진입 금액 (명목 USDT)</label>
+        <input type="number" min={0} step="any" value={sizeUsdt} onChange={(e) => setSizeUsdt(Number(e.target.value))} />
+        <label>레버리지</label>
+        <div className="manual-leverage-list">
+          {leverageOptions.map((lev) => (
+            <button
+              key={lev}
+              type="button"
+              className={leverage === lev ? "active" : ""}
+              onClick={() => setLeverage(lev)}
+            >
+              {lev}x
+            </button>
+          ))}
+        </div>
+        <label>손절 PnL ROI%</label>
+        <input type="number" min={0.1} step="any" value={slPct} onChange={(e) => setSlPct(Number(e.target.value))} />
+        <label>익절 PnL ROI%</label>
+        <input type="number" min={0.1} step="any" value={tpPct} onChange={(e) => setTpPct(Number(e.target.value))} />
+        <p className="settings-hint">
+          {leverage}x 기준 가격폭: 손절 약 {fmtNum(slMove, 2)}%, 익절 약 {fmtNum(tpMove, 2)}%.
+        </p>
+        <div className="manual-trade-actions">
+          <button type="button" className="long" disabled={busy} onClick={() => submit("long")}>매수 롱</button>
+          <button type="button" className="short" disabled={busy} onClick={() => submit("short")}>매도 숏</button>
+        </div>
+        {msg && <div className={msg.includes("실패") ? "manual-msg error" : "manual-msg"}>{msg}</div>}
+      </section>
     </div>
   );
 }

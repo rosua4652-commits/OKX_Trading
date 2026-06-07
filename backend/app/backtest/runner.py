@@ -12,6 +12,11 @@ from typing import Any, Optional
 
 from app.backtest.engine import build_result
 from app.backtest.history_sl_tp import exit_stats_from_trades, merge_sl_tp_with_history
+from app.backtest.live_feedback import (
+    mark_feedback_reviewed,
+    pending_feedback_summary,
+    should_run_feedback_backtest,
+)
 from app.backtest.models import BacktestLogEntry, BacktestResult, BacktestStatus
 from app.config import settings
 from app.market.data_provider import market
@@ -171,6 +176,7 @@ def _save_result(result: BacktestResult) -> None:
         "exit_stats": exit_stats,
         "applied_sl_pct": applied_sl,
         "applied_tp_pct": applied_tp,
+        "zone_walkforward": result.zone_walkforward.model_dump(),
         "error": result.error,
     }
     with HISTORY_FILE.open("a", encoding="utf-8") as f:
@@ -297,6 +303,7 @@ async def _background_loop() -> None:
     if delay > 0:
         await asyncio.sleep(delay)
 
+    feedback_check_at = 0.0
     while True:
         interval = 3600
         try:
@@ -311,6 +318,25 @@ async def _background_loop() -> None:
             if not settings.backtest_auto_run:
                 await asyncio.sleep(interval)
                 continue
+            now = asyncio.get_running_loop().time()
+            if now >= feedback_check_at:
+                feedback_check_at = now + 60
+                if should_run_feedback_backtest():
+                    summary = pending_feedback_summary()
+                    symbols = summary["symbols"] or []
+                    _status.phase = "feedback"
+                    _status.message = (
+                        f"실거래 피드백 재검증: 최근 승률 {summary['recent_win_rate']}%, "
+                        f"손실 {summary['recent_losses']}건"
+                    )
+                    candle_limit = max(
+                        300,
+                        min(1000, int(cfg.backtest_candle_limit or settings.backtest_candle_limit)),
+                    )
+                    await _run_job(cfg, symbols, candle_limit, True)
+                    mark_feedback_reviewed()
+                    await asyncio.sleep(60)
+                    continue
             _status.phase = "scheduled"
             _status.message = "자동 백테스트 실행"
             candle_limit = max(80, min(1000, int(cfg.backtest_candle_limit or settings.backtest_candle_limit)))

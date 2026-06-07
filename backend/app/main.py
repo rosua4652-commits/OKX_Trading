@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import APIRouter, FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -27,7 +27,13 @@ from app.models import (
     StrategyMode,
     TradeMode,
 )
-from app.backtest.auto_apply import build_config_from_backtest, config_changed
+from app.backtest.auto_apply import (
+    auto_apply_decision,
+    build_config_from_backtest,
+    config_changed,
+    get_auto_apply_history,
+    record_auto_apply_decision,
+)
 from app.backtest.models import BacktestResult
 from app.backtest.runner import (
     apply_recommendation,
@@ -42,6 +48,7 @@ from app.backtest.runner import (
     stop_background_loop,
 )
 from app.backtest.symbol_sl_tp import profiles_for_client
+from app.backtest.live_feedback import pending_feedback_summary
 from app.config_public import config_for_client, merge_config_update
 from app.engine.portfolio_store import store
 from app.storage.user_settings import load_settings, save_settings
@@ -96,12 +103,25 @@ async def lifespan(app: FastAPI):
     def _on_backtest_complete(result: BacktestResult) -> None:
         before = engine.config
         updated = build_config_from_backtest(before, result)
+        decision = auto_apply_decision(before, updated, result)
+        record_auto_apply_decision(decision)
         if updated is None:
+            engine._log("backtest", f"자동 설정 반영 보류: {decision['reason']}", "warn")
             return
         if not config_changed(before, updated):
+            engine._log("backtest", "자동 설정 반영 보류: 변경 없음")
             return
         engine.apply_config(updated, "백테스트 자동 적용")
         save_settings(engine.config)
+        engine._log(
+            "backtest",
+            (
+                f"자동 설정 반영 완료: score {before.min_score:g}->{updated.min_score:g}, "
+                f"SL {before.stop_loss_pct:g}->{updated.stop_loss_pct:g}, "
+                f"TP {before.take_profit_pct:g}->{updated.take_profit_pct:g}"
+            ),
+            "ok",
+        )
 
     set_auto_apply_handler(_on_backtest_complete)
     start_background_loop(lambda: engine.config)
@@ -163,6 +183,8 @@ async def status():
         "auto_run": app_settings.backtest_auto_run,
         "interval_sec": interval_seconds(engine.config),
         "interval_minutes": engine.config.backtest_interval_minutes,
+        "live_feedback": pending_feedback_summary(),
+        "auto_apply_history": get_auto_apply_history(10),
     }
     return data
 
@@ -218,6 +240,56 @@ async def scan_now():
     return {"candidates": [c.model_dump() for c in candidates]}
 
 
+@api.get("/symbols/search")
+async def search_symbols(q: str = Query("", max_length=40), limit: int = 20):
+    from app.market.data_provider import market
+    from app.market.okx_client import get_okx_client
+    from app.models import InstrumentType
+
+    query = q.strip().upper().replace("/", "-")
+    if query and not query.endswith("USDT") and "-USDT" not in query:
+        query = f"{query}-USDT"
+    rows = await market.tickers(InstrumentType.SWAP)
+    meta_rows = await asyncio.to_thread(get_okx_client().get_instruments, "SWAP")
+    meta_by_id = {str(m.get("instId") or ""): m for m in meta_rows}
+
+    def leverage_options(inst_id: str) -> list[int]:
+        meta = meta_by_id.get(inst_id) or {}
+        raw = meta.get("lever") or meta.get("maxLever") or meta.get("maxLeverage") or 125
+        try:
+            max_lev = int(float(raw))
+        except (TypeError, ValueError):
+            max_lev = 125
+        base = [1, 2, 3, 5, 10, 20, 30, 50, 75, 100, 125]
+        opts = [x for x in base if x <= max_lev]
+        return opts or [1]
+
+    out: list[dict] = []
+    for t in rows:
+        inst_id = str(t.get("instId") or "")
+        if not inst_id.endswith("-SWAP"):
+            continue
+        if query and query not in inst_id.upper():
+            continue
+        try:
+            last = float(t.get("last") or 0)
+            open24 = float(t.get("open24h") or last or 0)
+            vol_ccy = float(t.get("volCcy24h") or 0)
+            vol = vol_ccy if vol_ccy > 0 else float(t.get("vol24h") or 0) * last
+            change = (last - open24) / open24 * 100 if open24 > 0 else 0.0
+        except (TypeError, ValueError):
+            last, vol, change = 0.0, 0.0, 0.0
+        out.append({
+            "inst_id": inst_id,
+            "last": last,
+            "change_24h_pct": round(change, 2),
+            "volume_24h_usdt": round(vol, 0),
+            "leverage_options": leverage_options(inst_id),
+        })
+    out.sort(key=lambda x: x["volume_24h_usdt"], reverse=True)
+    return {"symbols": out[: max(1, min(50, limit))]}
+
+
 class CloseRequest(BaseModel):
     inst_id: str
 
@@ -245,6 +317,7 @@ class PositionAutoSlTpRequest(BaseModel):
     disabled: bool | None = None
     sl_disabled: bool | None = None
     tp_disabled: bool | None = None
+    profit_protect_disabled: bool | None = None
 
 
 @api.post("/position/sl-tp")
@@ -260,6 +333,7 @@ async def set_position_auto_sl_tp_disabled(req: PositionAutoSlTpRequest):
         req.disabled,
         req.sl_disabled,
         req.tp_disabled,
+        req.profit_protect_disabled,
     )
     return {"ok": ok, "message": msg}
 
@@ -297,6 +371,15 @@ async def reset_paper(req: PaperResetRequest = PaperResetRequest()):
         }
     except Exception as e:
         return {"ok": False, "message": f"초기화 실패: {e}"}
+
+
+@api.post("/portfolio/stats/reset")
+async def reset_portfolio_stats():
+    try:
+        ok, msg = await engine.reset_trade_stats()
+        return {"ok": ok, "message": msg}
+    except Exception as e:
+        return {"ok": False, "message": f"통계 초기화 실패: {e}"}
 
 
 @api.post("/test-connection")

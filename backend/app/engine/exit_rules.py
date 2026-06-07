@@ -7,6 +7,28 @@ from app.models import AppConfig, Position, PositionSide, StrategyMode
 from app.strategy_utils import sl_tp_pcts
 
 
+def _profit_giveback_exit(pos: Position, config: AppConfig, tp_pct: float) -> tuple[bool, str]:
+    if pos.strategy_mode != StrategyMode.SCALP or not config.trailing_stop:
+        return False, ""
+    if pos.auto_profit_protect_disabled or pos.entry_price <= 0:
+        return False, ""
+    lev = max(1, pos.leverage or config.leverage or 1)
+    if pos.side == PositionSide.LONG:
+        if pos.trailing_high <= pos.entry_price:
+            return False, ""
+        peak_roi = ((pos.trailing_high - pos.entry_price) / pos.entry_price) * 100 * lev
+    else:
+        if pos.trailing_high <= 0 or pos.trailing_high >= pos.entry_price:
+            return False, ""
+        peak_roi = ((pos.entry_price - pos.trailing_high) / pos.entry_price) * 100 * lev
+    current_roi = pos.unrealized_pnl_pct
+    giveback = peak_roi - current_roi
+    effective_tp_pct = min(max(tp_pct, 0.0), 10.0)
+    if peak_roi >= max(2.0, effective_tp_pct * 0.35) and giveback >= max(1.0, peak_roi * 0.35):
+        return True, f"수익 보호 익절 (최고 {peak_roi:.1f}% -> 현재 {current_roi:.1f}%)"
+    return False, ""
+
+
 def should_exit(
     pos: Position,
     config: AppConfig,
@@ -33,6 +55,10 @@ def should_exit(
             return True, f"손절 PnL({sl_pct}%)"
         if not tp_disabled and price >= pos.take_profit:
             return True, f"익절 PnL({tp_pct}%)"
+        if not tp_disabled:
+            protect_exit, protect_reason = _profit_giveback_exit(pos, config, tp_pct)
+            if protect_exit:
+                return True, protect_reason
         if not sl_disabled and config.trailing_stop and pos.trailing_high > pos.entry_price:
             activate = pos.entry_price * (1 + settings.trailing_activate_pct / 100)
             if pos.trailing_high >= activate:
@@ -44,6 +70,10 @@ def should_exit(
             return True, f"손절 PnL({sl_pct}%)"
         if not tp_disabled and price <= pos.take_profit:
             return True, f"익절 PnL({tp_pct}%)"
+        if not tp_disabled:
+            protect_exit, protect_reason = _profit_giveback_exit(pos, config, tp_pct)
+            if protect_exit:
+                return True, protect_reason
         if not sl_disabled and config.trailing_stop and pos.trailing_high < pos.entry_price:
             activate = pos.entry_price * (1 - settings.trailing_activate_pct / 100)
             if pos.trailing_high <= activate:

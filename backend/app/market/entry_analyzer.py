@@ -59,6 +59,13 @@ def _analyze_closes(
     ema50 = _ema(closes, 50)
     rsi = _rsi(closes)
     _, macd_trend = _macd_signal(closes)
+    macro_down = False
+    macro_up = False
+    if len(closes) >= 80 and len(ema50) >= 50:
+        ema50_slope_pct = (ema50[-1] - ema50[-24]) / ema50[-24] * 100 if ema50[-24] > 0 else 0.0
+        price_lookback_pct = (closes[-1] - closes[-72]) / closes[-72] * 100 if closes[-72] > 0 else 0.0
+        macro_down = ema50_slope_pct < -0.35 and price_lookback_pct < -1.5
+        macro_up = ema50_slope_pct > 0.25 and price_lookback_pct > 0.8
 
     if closes[-1] > ema12[-1] > ema26[-1] > ema50[-1]:
         if strategy == StrategyMode.SWING:
@@ -134,8 +141,20 @@ def _analyze_closes(
             score += 10
             reasons.append("거래량 증가")
 
+    if macro_down and trend in ("strong_up", "up"):
+        score -= 22
+        if trend == "strong_up":
+            trend = "up"
+        reasons.append("상위 하락 추세 안의 반등")
+    elif macro_up and trend == "up":
+        score += 5
+        reasons.append("상위 상승 추세 확인")
+
     scalp_ok = score >= 55 and trend in ("strong_up", "up", "sideways")
     swing_ok = score >= 50 and trend in ("strong_up", "up")
+    if macro_down and trend in ("strong_up", "up"):
+        scalp_ok = False
+        swing_ok = False
 
     if trend == "down" and rsi > 60:
         scalp_ok = False
@@ -144,7 +163,7 @@ def _analyze_closes(
     # 롱: 상승·반등 / 숏: 하락·고점 과열·약세
     outlook = "neutral"
     bearish = macd_trend == "bearish" or trend == "down"
-    if trend in ("strong_up", "up") and score >= 48 and rsi < 72:
+    if trend in ("strong_up", "up") and score >= 48 and rsi < 72 and not macro_down:
         outlook = "long"
     elif trend == "down" and (rsi >= 48 or score < 45):
         outlook = "short"
@@ -152,7 +171,7 @@ def _analyze_closes(
     elif rsi >= 62 and bearish:
         outlook = "short"
         reasons.append("과열·약세 → 숏")
-    elif score >= 50 and trend in ("strong_up", "up"):
+    elif score >= 50 and trend in ("strong_up", "up") and not macro_down:
         outlook = "long"
     elif score < 40 and trend == "down":
         outlook = "short"

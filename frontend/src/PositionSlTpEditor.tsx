@@ -113,6 +113,7 @@ export function PositionSlTpEditor({
   const crossed = useMemo(() => crossedLevel(p), [p]);
   const slDisabled = !!p.auto_sl_disabled || !!p.auto_sl_tp_disabled;
   const tpDisabled = !!p.auto_tp_disabled || !!p.auto_sl_tp_disabled;
+  const profitProtectDisabled = !!p.auto_profit_protect_disabled || !!p.auto_sl_tp_disabled;
 
   const save = async () => {
     const sl = Number(slUsdt);
@@ -160,7 +161,7 @@ export function PositionSlTpEditor({
     }
   };
 
-  const setDisabled = async (patch: { sl_disabled?: boolean; tp_disabled?: boolean }) => {
+  const setDisabled = async (patch: { sl_disabled?: boolean; tp_disabled?: boolean; profit_protect_disabled?: boolean }) => {
     setSaving(true);
     setErr("");
     try {
@@ -183,6 +184,7 @@ export function PositionSlTpEditor({
         {p.sl_tp_manual && <span className="badge manual-sl-tp">수동</span>}
         {slDisabled && <span className="badge disabled-sl-tp">손절 OFF</span>}
         {tpDisabled && <span className="badge disabled-sl-tp">익절 OFF</span>}
+        {profitProtectDisabled && <span className="badge disabled-sl-tp">수익보호 OFF</span>}
         <span className="sl-tp-pct-line">
           [{strategyLabel(p.strategy_mode)}] SL -{fmtPnlUsdt(slAmount)} / TP +{fmtPnlUsdt(tpAmount)}
         </span>
@@ -219,7 +221,7 @@ export function PositionSlTpEditor({
         <button type="button" className="sl-tp-save" disabled={saving} onClick={save}>
           {saving ? "저장중" : "적용"}
         </button>
-        {(p.sl_tp_manual || slDisabled || tpDisabled) && (
+        {(p.sl_tp_manual || slDisabled || tpDisabled || profitProtectDisabled) && (
           <button type="button" className="sl-tp-auto" disabled={saving} onClick={resetAuto}>
             자동
           </button>
@@ -243,6 +245,15 @@ export function PositionSlTpEditor({
             onChange={(e) => setDisabled({ tp_disabled: e.target.checked })}
           />
           익절 사용 안 함
+        </label>
+        <label className="sl-tp-disable-toggle">
+          <input
+            type="checkbox"
+            checked={profitProtectDisabled}
+            disabled={saving}
+            onChange={(e) => setDisabled({ profit_protect_disabled: e.target.checked })}
+          />
+          수익보호 사용 안 함
         </label>
       </div>
       <div className="sl-tp-hint">

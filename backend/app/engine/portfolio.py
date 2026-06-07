@@ -57,6 +57,7 @@ class PortfolioManager:
         self.realized_pnl = 0.0
         self.positions: dict[str, Position] = {}
         self.trades: list[TradeRecord] = []
+        self.stats_reset_at = ""
         self._file = DATA_DIR / f"portfolio_{mode.value}.json"
 
     def save(self) -> None:
@@ -68,6 +69,7 @@ class PortfolioManager:
             "realized_pnl": self.realized_pnl,
             "positions": {k: v.model_dump() for k, v in self.positions.items()},
             "trades": [t.model_dump() for t in self.trades[-500:]],
+            "stats_reset_at": self.stats_reset_at,
         }
         self._file.write_text(json.dumps(data, ensure_ascii=False, indent=2))
 
@@ -80,6 +82,13 @@ class PortfolioManager:
         self.realized_pnl = 0.0
         self.positions = {}
         self.trades = []
+        self.stats_reset_at = ""
+        self.save()
+
+    def reset_stats(self) -> None:
+        self.realized_pnl = 0.0
+        self.trades = []
+        self.stats_reset_at = utc_now_iso()
         self.save()
 
     def load(self) -> None:
@@ -90,6 +99,7 @@ class PortfolioManager:
             self.balance = float(data.get("balance", self.balance))
             self.available = float(data.get("available", self.available))
             self.realized_pnl = float(data.get("realized_pnl", 0))
+            self.stats_reset_at = str(data.get("stats_reset_at") or "")
             self.positions = {
                 k: Position(**v) for k, v in data.get("positions", {}).items()
             }

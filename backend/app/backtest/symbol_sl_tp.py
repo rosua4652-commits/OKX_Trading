@@ -37,11 +37,11 @@ class SymbolSlTpProfile(BaseModel):
 
 
 def _clamp_sl(v: float) -> float:
-    return round(max(0.5, min(8.0, v)), 2)
+    return round(max(4.0, min(10.0, v)), 2)
 
 
 def _clamp_tp(v: float) -> float:
-    return round(max(0.8, min(12.0, v)), 2)
+    return round(max(5.0, min(10.0, v)), 2)
 
 
 def _avg_win_tp_from_trades(trades: list[BacktestTrade]) -> float | None:
@@ -71,7 +71,7 @@ def optimize_symbol_sl_tp(
         set(SL_GRID + [round(base_sl * 0.75, 2), round(base_sl, 2), round(base_sl * 1.25, 2)])
     )
     tp_candidates = sorted(
-        set(TP_GRID + [round(base_tp * 0.75, 2), round(base_tp, 2), round(base_tp * 1.25, 2), 1.5])
+        set(TP_GRID + [round(base_tp * 0.75, 2), round(base_tp, 2), round(base_tp * 1.25, 2)])
     )
 
     best_rank = float("-inf")
@@ -81,7 +81,7 @@ def optimize_symbol_sl_tp(
 
     for sl in sl_candidates:
         for tp in tp_candidates:
-            if tp < sl * 0.55:
+            if tp < sl * 1.15 or tp > sl * 1.8:
                 continue
             cfg = config.model_copy(deep=True)
             cfg.stop_loss_pct = sl
@@ -101,7 +101,7 @@ def optimize_symbol_sl_tp(
             wins = sum(1 for t in sym_trades if t.pnl_usdt > 0)
             wr = wins / len(sym_trades) * 100
             sl_h, tp_h = _count_exit_types(sym_trades)
-            rank = _sl_tp_rank(wr, pnl, len(sym_trades), tp_h)
+            rank = _sl_tp_rank(wr, pnl, len(sym_trades), tp_h, tp, StrategyMode.SCALP)
             if rank > best_rank:
                 best_rank = rank
                 best_sl, best_tp = sl, tp
@@ -115,7 +115,15 @@ def optimize_symbol_sl_tp(
     avg_win_tp = _avg_win_tp_from_trades(best_trades_list)
     final_tp = best_tp
     if avg_win_tp is not None and avg_win_tp > 0:
-        final_tp = _clamp_tp(best_tp * 0.45 + avg_win_tp * 0.55)
+        # avg_win_tp도 clamp 후 블렌딩 — 실제 익절 평균이 높아도 상한 초과 방지
+        avg_win_tp_clamped = _clamp_tp(avg_win_tp)
+        blended = best_tp * 0.55 + avg_win_tp_clamped * 0.45
+        final_tp = _clamp_tp(blended)
+    # rr=1.5 사용: 2.0이면 sl*2.0 최솟값으로 TP가 튀어오르는 문제 방지
+    best_sl = _clamp_sl(best_sl)
+    final_tp = _clamp_tp(max(final_tp, best_sl * 1.15))
+    # enforce_wide_rr_sl_tp의 max(24, sl*rr) 허용치를 전략 상한으로 재클램프
+    final_tp = round(min(final_tp, best_sl * 1.8), 2)
 
     return SymbolSlTpProfile(
         inst_id=inst_id,
@@ -165,14 +173,19 @@ def build_symbol_profiles(
         avg_win_tp = _avg_win_tp_from_trades(sym_trades)
         sl_vals = [t.sl_pct for t in sym_trades if t.sl_pct > 0]
         tp_vals = [t.tp_pct for t in sym_trades if t.tp_pct > 0]
+        inferred_sl = sum(sl_vals) / len(sl_vals) if sl_vals else config.stop_loss_pct
+        inferred_tp = (
+            avg_win_tp
+            if avg_win_tp
+            else (sum(tp_vals) / len(tp_vals) if tp_vals else config.take_profit_pct)
+        )
+        inferred_sl = _clamp_sl(inferred_sl)
+        inferred_tp = _clamp_tp(max(inferred_tp, inferred_sl * 1.15))
+        inferred_tp = round(min(inferred_tp, inferred_sl * 1.8), 2)
         profiles[inst_id] = SymbolSlTpProfile(
             inst_id=inst_id,
-            stop_loss_pct=_clamp_sl(sum(sl_vals) / len(sl_vals) if sl_vals else config.stop_loss_pct),
-            take_profit_pct=_clamp_tp(
-                avg_win_tp
-                if avg_win_tp
-                else (sum(tp_vals) / len(tp_vals) if tp_vals else config.take_profit_pct)
-            ),
+            stop_loss_pct=_clamp_sl(inferred_sl),
+            take_profit_pct=_clamp_tp(inferred_tp),
             win_rate=round(len(wins) / len(sym_trades) * 100, 1),
             trades=len(sym_trades),
             updated_at=utc_now_iso(),
@@ -210,14 +223,14 @@ def merge_profiles(
         w_old = max(1.0, old.win_rate) * min(old.trades, 20)
         w_new = max(1.0, new.win_rate) * min(new.trades, 20)
         total = w_old + w_new
+        merged_sl = _clamp_sl((old.stop_loss_pct * w_old + new.stop_loss_pct * w_new) / total)
+        merged_tp = _clamp_tp((old.take_profit_pct * w_old + new.take_profit_pct * w_new) / total)
+        merged_tp = _clamp_tp(max(merged_tp, merged_sl * 1.15))
+        merged_tp = round(min(merged_tp, merged_sl * 1.8), 2)
         out[inst_id] = SymbolSlTpProfile(
             inst_id=inst_id,
-            stop_loss_pct=_clamp_sl(
-                (old.stop_loss_pct * w_old + new.stop_loss_pct * w_new) / total
-            ),
-            take_profit_pct=_clamp_tp(
-                (old.take_profit_pct * w_old + new.take_profit_pct * w_new) / total
-            ),
+            stop_loss_pct=_clamp_sl(merged_sl),
+            take_profit_pct=_clamp_tp(merged_tp),
             win_rate=round((old.win_rate * w_old + new.win_rate * w_new) / total, 1),
             trades=old.trades + new.trades,
             tp_hits=old.tp_hits + new.tp_hits,
@@ -257,7 +270,10 @@ def resolve_entry_sl_tp(
         if prof.avg_win_tp_pct > 0:
             note += f"·익절평균 {prof.avg_win_tp_pct}%"
         note += ")"
-        return prof.stop_loss_pct, prof.take_profit_pct, note
+        sl = _clamp_sl(prof.stop_loss_pct)
+        tp = _clamp_tp(max(prof.take_profit_pct, sl * 1.15))
+        tp = round(min(tp, sl * 1.8), 2)
+        return sl, tp, note
 
     from app.strategy_utils import sl_tp_pcts
 

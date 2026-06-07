@@ -27,17 +27,20 @@ def resolve_entry_side(config: AppConfig, cand: CoinCandidate) -> PositionSide |
         return None
 
     if config.allow_short and config.instrument_type != InstrumentType.SPOT:
-        if cand.outlook == "short":
+        short_score_ok = cand.score >= config.min_score
+        short_trend_ok = cand.trend == "down"
+        if cand.outlook == "short" and short_trend_ok and short_score_ok:
             return PositionSide.SHORT
-        if cand.short_scalp_ok or cand.short_swing_ok:
+        if short_trend_ok and short_score_ok and (cand.short_scalp_ok or cand.short_swing_ok):
             return PositionSide.SHORT
-        if cand.trend == "down" and cand.rsi >= 52 and cand.change_24h_pct < -2:
+        if short_trend_ok and cand.score >= config.min_score + 10 and cand.rsi >= 52 and cand.change_24h_pct < -2:
             return PositionSide.SHORT
-        if cand.rsi >= 65 and cand.trend in ("down", "sideways"):
+        if short_trend_ok and cand.score >= config.min_score and cand.rsi >= 65:
             return PositionSide.SHORT
 
-    if cand.outlook == "long" or cand.scalp_ok or cand.swing_ok:
+    long_trend_ok = cand.trend in ("strong_up", "up")
+    if long_trend_ok and cand.score >= config.min_score and (cand.outlook == "long" or cand.scalp_ok or cand.swing_ok):
         return PositionSide.LONG
-    if cand.score >= config.min_score and cand.trend in ("strong_up", "up"):
+    if cand.score >= config.min_score and long_trend_ok:
         return PositionSide.LONG
     return None

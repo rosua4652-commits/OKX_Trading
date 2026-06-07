@@ -25,6 +25,7 @@ from app.models import (
 from app.order_sizing import resolve_order_size_usdt
 from app.strategy_utils import active_strategies, sl_tp_pcts
 from app.backtest.candles_util import build_symbol_charts
+from app.backtest.zone_walkforward import evaluate_zone_walkforward
 from app.backtest.models import (
     BacktestDirectionTrial,
     BacktestLogEntry,
@@ -38,8 +39,15 @@ from app.backtest.models import (
 
 SCORE_GRID = [45.0, 50.0, 55.0, 60.0, 65.0, 70.0]
 WINDOW_RATIOS = [1.0, 0.75, 0.5]
-SL_GRID = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0]
-TP_GRID = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0]
+SL_GRID = [4.0, 5.0, 6.0, 7.0, 8.0, 10.0]
+TP_GRID = [5.0, 6.0, 7.0, 8.0, 10.0, 12.0, 14.0]
+
+# 전략별 TP 상한: 백테스트 승률이 아무리 높아도 이 이상은 추천하지 않음
+TP_MAX_BY_STRATEGY: dict[StrategyMode, float] = {
+    StrategyMode.SCALP: 10.0,
+    StrategyMode.SWING: 18.0,
+    StrategyMode.BOTH: 10.0,
+}
 
 
 def _utc_now() -> str:
@@ -307,7 +315,7 @@ def _trend_break_signal_bt(
     closes = np.array([float(c[4]) for c in window])
     volumes = np.array([float(c[5]) for c in window])
     pos = _to_position(sim, float(closes[-1]), cfg)
-    if pos.unrealized_pnl_pct < max(2.0, cfg.scale_in_min_pnl_pct * 0.7):
+    if pos.unrealized_pnl_pct < max(1.0, cfg.scale_in_min_pnl_pct * 0.35):
         return False, ""
     ema20 = _ema(closes, 20)
     hist = _macd_hist(closes)
@@ -323,7 +331,12 @@ def _trend_break_signal_bt(
     else:
         macd_turn = hist[-1] > hist[-2] > hist[-3] and hist[-1] > 0
         candle_break = all(closes[i] > ema20[i] for i in recent) and closes[-1] > opens[-1]
-    if pos.unrealized_pnl > 0 and macd_turn and candle_break and vol_ratio >= 1.2:
+    reversal_ok = (
+        (macd_turn and candle_break)
+        or (macd_turn and vol_ratio >= 1.05)
+        or (candle_break and vol_ratio >= 1.1)
+    )
+    if pos.unrealized_pnl > 0 and reversal_ok:
         return True, f"추세 이탈 ({confirm_bars}캔들 확인)"
     return False, ""
 
@@ -586,15 +599,77 @@ def _metrics_from_state(
 def _trial_rank(pnl: float, win_rate: float, trades: int) -> float:
     if trades < 1:
         return -1e9
-    return pnl + win_rate * 0.35 + min(trades, 25) * 0.15
+    if trades < 3:
+        return pnl - 25 + trades * 2
+    expectancy = pnl / trades
+    trade_bonus = min(trades, 40) * 0.45
+    sparse_penalty = max(0, 8 - trades) * 3.0
+    return pnl * 1.1 + expectancy * 8.0 + win_rate * 0.12 + trade_bonus - sparse_penalty
 
 
-def _sl_tp_rank(win_rate: float, pnl: float, trades: int, tp_hits: int) -> float:
-    """Prioritize win rate; reward TP hits over end-of-test closes."""
+def _sl_tp_rank(
+    win_rate: float,
+    pnl: float,
+    trades: int,
+    tp_hits: int,
+    tp_pct: float,
+    strategy: StrategyMode,
+) -> float:
+    """
+    승률 우선으로 랭킹을 매기되, TP가 전략 상한을 넘으면 페널티를 적용한다.
+    - 승률이 높아도 TP를 무조건 높이는 방향을 막기 위해
+      전략별 TP 상한(TP_MAX_BY_STRATEGY) 초과 시 페널티 부여
+    - 적정 TP 범위 안에서 승률+PnL+tp_hits를 최대화하는 조합 선택
+    """
     if trades < 2:
         return -1e9
+
+    tp_max = TP_MAX_BY_STRATEGY.get(strategy, 14.0)
+
+    # TP 상한 초과 시 페널티 (초과량에 비례)
+    tp_penalty = 0.0
+    if tp_pct > tp_max:
+        tp_penalty = (tp_pct - tp_max) * 5.0  # 1%당 5점 페널티
+
+    # 승률이 60% 이상일 때는 TP를 낮추는 방향을 선호 (빠른 익절이 더 유리)
+    tp_size_penalty = 0.0
+    if win_rate >= 60 and tp_pct > tp_max * 0.75:
+        tp_size_penalty = (tp_pct - tp_max * 0.75) * 2.0
+
     tp_bonus = min(tp_hits, trades) * 0.4
-    return win_rate * 3.5 + min(trades, 30) * 0.2 + pnl * 0.08 + tp_bonus
+    base = win_rate * 3.5 + min(trades, 30) * 0.2 + pnl * 0.08 + tp_bonus
+    return base - tp_penalty - tp_size_penalty
+
+
+def _sl_tp_rank(
+    win_rate: float,
+    pnl: float,
+    trades: int,
+    tp_hits: int,
+    tp_pct: float,
+    strategy: StrategyMode,
+) -> float:
+    """Rank SL/TP by expectancy, TP hit rate, and enough trade samples."""
+    if trades < 2:
+        return -1e9
+
+    tp_max = TP_MAX_BY_STRATEGY.get(strategy, 14.0)
+    tp_rate = tp_hits / trades if trades > 0 else 0.0
+    unresolved = max(0, trades - tp_hits)
+    expectancy = pnl / trades if trades > 0 else -999.0
+
+    tp_penalty = 0.0
+    if tp_pct > tp_max:
+        tp_penalty += (tp_pct - tp_max) * 10.0
+    if strategy == StrategyMode.SCALP and tp_pct > 8.0:
+        tp_penalty += (tp_pct - 8.0) * 2.5
+
+    sparse_penalty = max(0, 6 - trades) * 8.0
+    low_tp_hit_penalty = max(0.0, 0.28 - tp_rate) * 45.0
+    unresolved_penalty = (unresolved / trades) * 10.0 if trades else 0.0
+    tp_hit_bonus = tp_rate * 28.0 + min(tp_hits, 20) * 0.6
+    base = pnl * 1.25 + expectancy * 14.0 + win_rate * 0.18 + min(trades, 45) * 0.45 + tp_hit_bonus
+    return base - tp_penalty - sparse_penalty - low_tp_hit_penalty - unresolved_penalty
 
 
 def _count_exit_types(trades: list[BacktestTrade]) -> tuple[int, int]:
@@ -622,20 +697,36 @@ def optimize_sl_tp(
     base_sl = best_sl
     base_tp = best_tp
 
+    # 전략별 TP 상한 적용
+    strategy = config.strategy_mode
+    tp_max = TP_MAX_BY_STRATEGY.get(strategy, 14.0)
+
     sl_candidates = sorted(set(SL_GRID + [round(base_sl * 0.75, 2), round(base_sl, 2), round(base_sl * 1.25, 2)]))
-    tp_candidates = sorted(set(TP_GRID + [round(base_tp * 0.75, 2), round(base_tp, 2), round(base_tp * 1.25, 2)]))
+    # TP 후보를 전략 상한으로 제한
+    tp_candidates = sorted(set(
+        [t for t in TP_GRID if t <= tp_max]
+        + [round(base_tp * 0.75, 2), round(min(base_tp, tp_max), 2), round(min(base_tp * 1.25, tp_max), 2)]
+    ))
 
     logs.append(
         BacktestLogEntry(
             ts=_utc_now(),
             level="info",
-            message=f"SL/TP 탐색 (승률 우선) — score={min_score} SL 후보 {len(sl_candidates)} × TP {len(tp_candidates)}",
+            message=(
+                f"SL/TP 탐색 (승률 우선, TP상한 {tp_max}%) — "
+                f"score={min_score} SL 후보 {len(sl_candidates)} × TP {len(tp_candidates)}"
+            ),
         )
     )
 
     for sl in sl_candidates:
         for tp in tp_candidates:
-            if tp < sl * 0.6:
+            # SL 대비 최소 1.5배 이상 TP (기존 2.0배에서 완화 — 단타는 1.5배도 충분)
+            min_ratio = 1.15 if strategy == StrategyMode.SCALP else 1.5
+            max_ratio = 1.8 if strategy == StrategyMode.SCALP else 2.4
+            if tp < sl * min_ratio:
+                continue
+            if tp > sl * max_ratio:
                 continue
             cfg = config.model_copy(deep=True)
             cfg.stop_loss_pct = sl
@@ -662,19 +753,34 @@ def optimize_sl_tp(
                 sl_hits=sl_h,
             )
             trials.append(trial)
-            rank = _sl_tp_rank(wr, pnl, len(state.trades), tp_h)
+            rank = _sl_tp_rank(wr, pnl, len(state.trades), tp_h, tp, strategy)
             if rank > best_rank:
                 best_rank = rank
                 best_sl, best_tp = sl, tp
 
     reason = (
         f"승률 우선 SL {best_sl}% / TP {best_tp}% "
-        f"(후보 {len(trials)}개, score={min_score})"
+        f"(TP상한 {tp_max}%, 후보 {len(trials)}개, score={min_score})"
     )
-    top = sorted(trials, key=lambda t: _sl_tp_rank(t.win_rate, t.total_pnl, t.trades, t.tp_hits), reverse=True)
+    reason = (
+        f"기대값/TP도달률 우선 SL {best_sl}% / TP {best_tp}% "
+        f"(TP상한 {tp_max}%, 후보 {len(trials)}개, score={min_score})"
+    )
+    top = sorted(
+        trials,
+        key=lambda t: _sl_tp_rank(t.win_rate, t.total_pnl, t.trades, t.tp_hits, t.take_profit_pct, strategy),
+        reverse=True,
+    )
     if top:
         t0 = top[0]
         reason += f" — 최고 승률 {t0.win_rate}% PnL {t0.total_pnl:+.2f} ({t0.trades}건)"
+    if top:
+        t0 = top[0]
+        reason = (
+            f"SL/TP rank by expectancy and TP-hit: SL {best_sl}% / TP {best_tp}% "
+            f"(cap {tp_max}%, candidates {len(trials)}, score={min_score}) — "
+            f"top win {t0.win_rate}% PnL {t0.total_pnl:+.2f} TP hits {t0.tp_hits}/{t0.trades}"
+        )
     return best_sl, best_tp, trials, reason
 
 
@@ -910,6 +1016,19 @@ def build_result(
     else:
         interval = "5m"
     charts = build_symbol_charts(symbol_candles, state.trades)
+    zone_walkforward = evaluate_zone_walkforward(symbol_candles)
+    logs.append(
+        BacktestLogEntry(
+            ts=_utc_now(),
+            level="info",
+            message=(
+                f"구간 워크포워드: {zone_walkforward.samples}개 예측, "
+                f"정확도 {zone_walkforward.accuracy_pct}% "
+                f"(롱 {zone_walkforward.long_accuracy_pct}% / 숏 {zone_walkforward.short_accuracy_pct}%), "
+                f"평균 {zone_walkforward.avg_forward_r}R, 실패돌파 {zone_walkforward.false_break_pct}%"
+            ),
+        )
+    )
 
     symbol_profile_data: dict[str, dict] = {}
     if recommendation and symbol_candles:
@@ -978,4 +1097,5 @@ def build_result(
         trades=state.trades,
         logs=logs,
         symbol_profiles=symbol_profile_data,
+        zone_walkforward=zone_walkforward,
     )
