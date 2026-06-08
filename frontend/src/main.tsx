@@ -43,6 +43,43 @@ import { TradingViewChart } from "./TradingViewChart";
 import type { AppConfig, CoinCandidate, Position, StatusData, TradeRecord } from "./types";
 import "./index.css";
 
+const KST_TZ = "Asia/Seoul";
+
+function toDateObj(ts?: string): Date | null {
+  if (!ts) return null;
+  const normalized = ts.endsWith("Z") || /[+-]\d\d:\d\d$/.test(ts) ? ts : `${ts}Z`;
+  const d = new Date(normalized);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function formatKstTime(ts?: string, withDate = false): string {
+  const d = toDateObj(ts);
+  if (!d) return "-";
+  return new Intl.DateTimeFormat("ko-KR", {
+    timeZone: KST_TZ,
+    year: withDate ? "numeric" : undefined,
+    month: withDate ? "2-digit" : undefined,
+    day: withDate ? "2-digit" : undefined,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(d);
+}
+
+function kstDateKey(ts?: string): string {
+  const d = toDateObj(ts);
+  if (!d) return "날짜 없음";
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: KST_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(d);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
 function App() {
   const [data, setData] = useState<StatusData | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
@@ -61,7 +98,10 @@ function App() {
   };
 
   const applyServerState = useCallback((s: StatusData) => {
-    setData(s);
+    setData((prev) => {
+      if (!prev || s.backtest) return s;
+      return { ...s, backtest: prev.backtest };
+    });
     if (configLockedRef.current) return;
 
     setConfig((prev) => {
@@ -183,6 +223,8 @@ function App() {
       leverage: 3,
       stop_loss_pct: 2,
       take_profit_pct: 3,
+      profit_protect_trigger_pct: 3,
+      profit_protect_confirm_sec: 10,
       max_scale_ins: 2,
       scale_in_size_pct: 50,
       scale_in_min_pnl_pct: 3,
@@ -280,7 +322,10 @@ function App() {
       <header>
         <div>
           <h1>OKX Auto Trader</h1>
-          <span className="build">build {data.build}</span>
+          <span className="build">
+            build {data.build}
+            {data.server_time_kst ? ` · 서버 KST ${formatKstTime(data.server_time_kst)}` : ""}
+          </span>
         </div>
         <div className="controls">
           <button
@@ -699,6 +744,16 @@ function App() {
                 title={config.backtest_auto_sl_tp ? "백테스트 SL/TP 자동이 켜져 있어 백테스트 결과로 갱신됩니다" : ""}
                 onChange={(e) => patchNumberConfig("take_profit_pct", e.target.value)} />
             </div>
+            <div className="settings-row">
+              <label>보호 시작 (% of TP)</label>
+              <input type="number" min={0} max={100} step="0.1" value={config.profit_protect_trigger_pct ?? 3}
+                onChange={(e) => patchNumberConfig("profit_protect_trigger_pct", e.target.value)} />
+            </div>
+            <div className="settings-row">
+              <label>보호 유지 확인(초)</label>
+              <input type="number" min={0} max={300} step={1} value={config.profit_protect_confirm_sec ?? 10}
+                onChange={(e) => patchNumberConfig("profit_protect_confirm_sec", e.target.value)} />
+            </div>
             <div className="settings-row settings-check-block">
               <label className="settings-check">
                 <input
@@ -1100,7 +1155,7 @@ function App() {
         </div>
         {latestDecision && (
           <div className="strategy-latest-decision">
-            <span>{latestDecision.ts?.slice(11, 19)}</span>
+            <span>{formatKstTime(latestDecision.ts)}</span>
             {latestDecision.message}
           </div>
         )}
@@ -1231,7 +1286,7 @@ function App() {
           ) : (
             decisionLogs.slice(0, 80).map((log, i) => (
               <div key={i} className={`log-entry ${log.level}`}>
-                <span className="ts">{log.ts?.slice(11, 19)}</span>
+                <span className="ts">{formatKstTime(log.ts)}</span>
                 {log.message}
               </div>
             ))
@@ -1290,7 +1345,7 @@ function App() {
               key={i}
               className={`log-entry ${log.level}${log.phase === "config" ? " config" : ""}`}
             >
-              <span className="ts">{log.ts?.slice(11, 19)}</span>
+              <span className="ts">{formatKstTime(log.ts)}</span>
               <span className="phase">[{log.phase}]</span> {log.message}
             </div>
           ))}
@@ -1335,8 +1390,38 @@ function ExitHistoryPanel({
   filter: "all" | "sl" | "tp" | "other";
   onFilter: (f: "all" | "sl" | "tp" | "other") => void;
 }) {
+  const [selectedDate, setSelectedDate] = useState<string>("all");
+  const [equityTip, setEquityTip] = useState<{
+    x: number;
+    y: number;
+    time: string;
+    cumulative: number;
+    pnl: number;
+    instId: string;
+  } | null>(null);
   const sorted = [...trades].reverse();
-  const filtered = sorted.filter((t) => {
+  const dailyRows = [...trades].reduce((acc, t) => {
+    const day = kstDateKey(t.ts);
+    const row = acc.get(day) ?? { day, profit: 0, loss: 0, net: 0, count: 0, wins: 0, losses: 0 };
+    if (t.pnl > 0) {
+      row.profit += t.pnl;
+      row.wins += 1;
+    } else if (t.pnl < 0) {
+      row.loss += t.pnl;
+      row.losses += 1;
+    }
+    row.net += t.pnl;
+    row.count += 1;
+    acc.set(day, row);
+    return acc;
+  }, new Map<string, { day: string; profit: number; loss: number; net: number; count: number; wins: number; losses: number }>());
+  const dailyStats = Array.from(dailyRows.values()).sort((a, b) => b.day.localeCompare(a.day));
+  const maxDailyAbs = Math.max(
+    1,
+    ...dailyStats.map((d) => Math.max(Math.abs(d.profit), Math.abs(d.loss))),
+  );
+  const dateScoped = selectedDate === "all" ? sorted : sorted.filter((t) => kstDateKey(t.ts) === selectedDate);
+  const filtered = dateScoped.filter((t) => {
     const ct = t.close_type || "";
     if (filter === "all") return true;
     if (filter === "sl") return ct === "sl";
@@ -1344,14 +1429,58 @@ function ExitHistoryPanel({
     return ct !== "sl" && ct !== "tp";
   });
 
-  const slTrades = trades.filter((t) => t.close_type === "sl");
-  const tpTrades = trades.filter((t) => t.close_type === "tp");
+  const summarySource = selectedDate === "all" ? trades : trades.filter((t) => kstDateKey(t.ts) === selectedDate);
+  const slTrades = summarySource.filter((t) => t.close_type === "sl");
+  const tpTrades = summarySource.filter((t) => t.close_type === "tp");
   const slPnl = slTrades.reduce((s, t) => s + t.pnl, 0);
   const tpPnl = tpTrades.reduce((s, t) => s + t.pnl, 0);
+  const profitTrades = summarySource.filter((t) => t.pnl > 0);
+  const lossTrades = summarySource.filter((t) => t.pnl < 0);
+  const totalProfit = profitTrades.reduce((s, t) => s + t.pnl, 0);
+  const totalLoss = lossTrades.reduce((s, t) => s + t.pnl, 0);
+  const curveSource = [...summarySource].sort((a, b) => {
+    const at = toDateObj(a.ts)?.getTime() ?? 0;
+    const bt = toDateObj(b.ts)?.getTime() ?? 0;
+    return at - bt;
+  });
+  let runningPnl = 0;
+  const curveValues = [0, ...curveSource.map((t) => {
+    runningPnl += t.pnl;
+    return runningPnl;
+  })];
+  const curveMin = Math.min(0, ...curveValues);
+  const curveMax = Math.max(0, ...curveValues);
+  const curveRange = Math.max(1, curveMax - curveMin);
+  const curvePointData = curveValues.map((v, i) => {
+    const x = curveValues.length <= 1 ? 0 : (i / (curveValues.length - 1)) * 100;
+    const y = 50 - ((v - curveMin) / curveRange) * 50;
+    const trade = i === 0 ? null : curveSource[i - 1];
+    return { x, y, value: v, trade };
+  });
+  const curvePoints = curvePointData.map((p) => `${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(" ");
+  const curveAreaPoints = curvePointData.length
+    ? `0,50 ${curvePoints} 100,50`
+    : "";
+  const maxRunup = curveMax;
+  const maxDraw = curveMin;
 
   return (
     <div className="exit-history">
       <div className="exit-summary grid">
+        <div className="card">
+          <h3>총 수익</h3>
+          <div className="value positive">{profitTrades.length}건</div>
+          <div className="sub positive">
+            합계 +{fmtNum(totalProfit)}
+          </div>
+        </div>
+        <div className="card">
+          <h3>총 손실</h3>
+          <div className="value negative">{lossTrades.length}건</div>
+          <div className="sub negative">
+            합계 {fmtNum(totalLoss)}
+          </div>
+        </div>
         <div className="card">
           <h3>손절</h3>
           <div className="value negative">{slTrades.length}건</div>
@@ -1368,9 +1497,130 @@ function ExitHistoryPanel({
         </div>
         <div className="card">
           <h3>전체 청산</h3>
-          <div className="value">{trades.length}건</div>
+          <div className="value">{summarySource.length}건</div>
           <div className="sub" style={{ color: "#8b949e" }}>
-            모의·실거래 청산 시 자동 기록
+            {selectedDate === "all" ? "전체 기간" : selectedDate} · 한국시간 기준
+          </div>
+        </div>
+      </div>
+
+      <div className="section exit-daily-section">
+        <div className="exit-date-toolbar">
+          <h2>일자별 손익</h2>
+          <select value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)}>
+            <option value="all">전체 날짜</option>
+            {dailyStats.map((d) => (
+              <option key={d.day} value={d.day}>
+                {d.day} · {d.count}건 · {d.net >= 0 ? "+" : ""}{fmtNum(d.net)} USDT
+              </option>
+            ))}
+          </select>
+        </div>
+        {dailyStats.length === 0 ? (
+          <p style={{ color: "#8b949e" }}>표시할 일자별 손익이 없습니다.</p>
+        ) : (
+          <div className="daily-pnl-chart">
+            {dailyStats.slice(0, 14).map((d) => (
+              <button
+                key={d.day}
+                type="button"
+                className={`daily-pnl-row ${selectedDate === d.day ? "active" : ""}`}
+                onClick={() => setSelectedDate(d.day)}
+              >
+                <span className="daily-pnl-date">{d.day.slice(5)}</span>
+                <span className="daily-pnl-bars">
+                  <span
+                    className="daily-pnl-bar profit"
+                    style={{ width: `${Math.max(2, Math.abs(d.profit) / maxDailyAbs * 100)}%` }}
+                    title={`수익 +${fmtNum(d.profit)} USDT`}
+                  />
+                  <span
+                    className="daily-pnl-bar loss"
+                    style={{ width: `${Math.max(2, Math.abs(d.loss) / maxDailyAbs * 100)}%` }}
+                    title={`손실 ${fmtNum(d.loss)} USDT`}
+                  />
+                </span>
+                <span className={d.net >= 0 ? "positive" : "negative"}>
+                  {d.net >= 0 ? "+" : ""}{fmtNum(d.net)}
+                </span>
+                <span className="daily-pnl-count">{d.count}건</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="section exit-equity-section">
+        <div className="exit-date-toolbar">
+          <h2>누적 자금 흐름</h2>
+          <span className={runningPnl >= 0 ? "positive" : "negative"}>
+            누적 {runningPnl >= 0 ? "+" : ""}{fmtNum(runningPnl)} USDT
+          </span>
+        </div>
+        <div
+          className="equity-curve-card"
+          onMouseLeave={() => setEquityTip(null)}
+        >
+          <svg viewBox="0 0 100 56" preserveAspectRatio="none" className="equity-curve">
+            <line x1="0" y1="12.5" x2="100" y2="12.5" className="equity-grid" />
+            <line x1="0" y1="25" x2="100" y2="25" className="equity-grid" />
+            <line x1="0" y1="37.5" x2="100" y2="37.5" className="equity-grid" />
+            <line x1="0" y1="50" x2="100" y2="50" className="equity-zero" />
+            {curveAreaPoints && (
+              <polygon points={curveAreaPoints} className={runningPnl >= 0 ? "equity-area profit" : "equity-area loss"} />
+            )}
+            <polyline points={curvePoints} className={runningPnl >= 0 ? "equity-line profit" : "equity-line loss"} />
+            {curvePointData.map((p, i) => {
+              const trade = p.trade;
+              const bandWidth = curvePointData.length <= 1 ? 100 : 100 / (curvePointData.length - 1);
+              const x = Math.max(0, Math.min(100 - bandWidth, p.x - bandWidth / 2));
+              return (
+                <rect
+                  key={`${trade?.id ?? "start"}-${i}`}
+                  x={x}
+                  y={0}
+                  width={bandWidth}
+                  height={56}
+                  className="equity-hover-band"
+                  onMouseEnter={(e) => {
+                    const rect = e.currentTarget.ownerSVGElement?.getBoundingClientRect();
+                    if (!rect) return;
+                    setEquityTip({
+                      x: (p.x / 100) * rect.width,
+                      y: Math.max(16, (p.y / 56) * rect.height),
+                      time: trade ? formatKstTime(trade.ts, true) : "시작",
+                      cumulative: p.value,
+                      pnl: trade?.pnl ?? 0,
+                      instId: trade?.inst_id ?? "누적 시작점",
+                    });
+                  }}
+                  onMouseMove={(e) => {
+                    const rect = e.currentTarget.ownerSVGElement?.getBoundingClientRect();
+                    if (!rect) return;
+                    setEquityTip((prev) => prev ? { ...prev, x: e.clientX - rect.left, y: e.clientY - rect.top } : prev);
+                  }}
+                />
+              );
+            })}
+          </svg>
+          {equityTip && (
+            <div
+              className="equity-tooltip"
+              style={{
+                left: `min(calc(100% - 230px), ${Math.max(12, equityTip.x + 12)}px)`,
+                top: `${Math.min(Math.max(12, equityTip.y - 56), 120)}px`,
+              }}
+            >
+              <div className="equity-tooltip-time">{equityTip.time}</div>
+              <div>누적 <strong className={equityTip.cumulative >= 0 ? "positive" : "negative"}>{equityTip.cumulative >= 0 ? "+" : ""}{fmtNum(equityTip.cumulative)} USDT</strong></div>
+              <div>거래 <strong className={equityTip.pnl >= 0 ? "positive" : "negative"}>{equityTip.pnl >= 0 ? "+" : ""}{fmtNum(equityTip.pnl)} USDT</strong></div>
+              <div className="equity-tooltip-symbol">{equityTip.instId}</div>
+            </div>
+          )}
+          <div className="equity-curve-meta">
+            <span className="positive">최대 증가 +{fmtNum(maxRunup)} USDT</span>
+            <span className="negative">최대 감소 {fmtNum(maxDraw)} USDT</span>
+            <span>{curveSource.length}회 청산 기준</span>
           </div>
         </div>
       </div>
@@ -1414,7 +1664,7 @@ function ExitHistoryPanel({
             <tbody>
               {filtered.map((t) => (
                 <tr key={`${t.id}-${t.ts}`}>
-                  <td className="ts-cell">{t.ts?.slice(0, 19).replace("T", " ")}</td>
+                  <td className="ts-cell">{formatKstTime(t.ts, true)}</td>
                   <td>{t.inst_id}</td>
                   <td>
                     <span className={`badge ${t.position_side || ""}`}>

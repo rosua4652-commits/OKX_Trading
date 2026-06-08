@@ -1,4 +1,4 @@
-﻿"""Backtest job runner ??manual, background loop, history."""
+"""Backtest job runner - manual, background loop, history."""
 
 from __future__ import annotations
 
@@ -72,7 +72,6 @@ def get_latest() -> Optional[BacktestResult]:
 
 
 def load_persisted_state() -> None:
-    """Restore the latest result pointer after a server restart."""
     global _latest, _status
     latest = get_latest()
     if not latest:
@@ -83,8 +82,8 @@ def load_persisted_state() -> None:
     if latest.status == "done" and latest.metrics:
         _status.progress_pct = 100.0
         _status.message = (
-            f"理쒓렐 諛깊뀒?ㅽ듃 蹂듦뎄 ??PnL {latest.metrics.total_pnl:+.2f} "
-            f"?밸쪧 {latest.metrics.win_rate}%"
+            f"최근 백테스트 완료 · PnL {latest.metrics.total_pnl:+.2f} "
+            f"승률 {latest.metrics.win_rate}%"
         )
     elif latest.error:
         _status.message = latest.error
@@ -113,7 +112,6 @@ def get_history(limit: int = 30) -> list[dict[str, Any]]:
 
 
 def _merge_history_sl_tp(result: BacktestResult, config: AppConfig) -> BacktestResult:
-    """Blend grid SL/TP with accumulated history when auto SL/TP is enabled."""
     if not result.recommendation:
         return result
     rec = result.recommendation
@@ -126,6 +124,8 @@ def _merge_history_sl_tp(result: BacktestResult, config: AppConfig) -> BacktestR
         rec.take_profit_pct,
         prior,
         use_history=config.backtest_auto_sl_tp or len(prior) >= 3,
+        user_sl=config.stop_loss_pct or 0.0,
+        user_tp=config.take_profit_pct or 0.0,
     )
     if merged_sl == rec.stop_loss_pct and merged_tp == rec.take_profit_pct:
         return result
@@ -144,34 +144,21 @@ def _merge_history_sl_tp(result: BacktestResult, config: AppConfig) -> BacktestR
 
 def _save_result(result: BacktestResult) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    RESULT_FILE.write_text(
-        result.model_dump_json(indent=2),
-        encoding="utf-8",
-    )
+    RESULT_FILE.write_text(result.model_dump_json(indent=2), encoding="utf-8")
     trade_dicts = [t.model_dump() for t in result.trades]
     exit_stats = exit_stats_from_trades(trade_dicts)
-    applied_sl = result.params_snapshot.get("stop_loss_pct_applied") or result.params_snapshot.get(
-        "stop_loss_pct"
-    )
-    applied_tp = result.params_snapshot.get("take_profit_pct_applied") or result.params_snapshot.get(
-        "take_profit_pct"
-    )
+    applied_sl = result.params_snapshot.get("stop_loss_pct_applied") or result.params_snapshot.get("stop_loss_pct")
+    applied_tp = result.params_snapshot.get("take_profit_pct_applied") or result.params_snapshot.get("take_profit_pct")
     summary = {
         "id": result.id,
         "finished_at": result.finished_at or result.started_at,
         "status": result.status,
         "strategy_mode": result.strategy_mode,
         "symbols": result.symbols,
-        "direction": (
-            result.recommendation.direction if result.recommendation else None
-        ),
-        "window_ratio": (
-            result.recommendation.window_ratio if result.recommendation else None
-        ),
+        "direction": (result.recommendation.direction if result.recommendation else None),
+        "window_ratio": (result.recommendation.window_ratio if result.recommendation else None),
         "metrics": result.metrics.model_dump() if result.metrics else {},
-        "recommendation": (
-            result.recommendation.model_dump() if result.recommendation else None
-        ),
+        "recommendation": (result.recommendation.model_dump() if result.recommendation else None),
         "trade_count": len(result.trades),
         "exit_stats": exit_stats,
         "applied_sl_pct": applied_sl,
@@ -184,7 +171,6 @@ def _save_result(result: BacktestResult) -> None:
 
 
 def interval_seconds(config: AppConfig) -> int:
-    """Saved UI setting: backtest_interval_minutes (1??440)."""
     mins = max(1, min(1440, int(config.backtest_interval_minutes or 60)))
     return mins * 60
 
@@ -218,11 +204,28 @@ async def _fetch_candles(
 async def _run_job(config: AppConfig, symbols: list[str], candle_limit: int, optimize: bool) -> None:
     global _latest, _status
     logs: list[BacktestLogEntry] = []
+    heartbeat_task: asyncio.Task | None = None
+
+    async def _simulation_heartbeat() -> None:
+        ticks = 0
+        labels = [
+            "방향/min_score 탐색",
+            "SL/TP 후보 검증",
+            "보호 익절 후보 검증",
+            "최종 시뮬레이션",
+            "결과 집계",
+        ]
+        while _status.running and _status.phase == "simulate":
+            ticks += 1
+            _status.progress_pct = min(90.0, 35.0 + ticks * 3.0)
+            _status.message = labels[min(len(labels) - 1, ticks // 4)]
+            await asyncio.sleep(2)
+
     try:
         _status.running = True
         _status.progress_pct = 5.0
         _status.phase = "fetch"
-        _status.message = "罹붾뱾 ?곗씠???섏쭛"
+        _status.message = "캔들 데이터 수집"
 
         if not symbols:
             symbols = await top_symbols(config.instrument_type, limit=8)
@@ -232,11 +235,12 @@ async def _run_job(config: AppConfig, symbols: list[str], candle_limit: int, opt
         months = max(3, min(6, int(config.backtest_period_months or 3)))
         symbol_candles = await _fetch_candles(config, symbols, candle_limit, months)
         if not symbol_candles:
-            raise RuntimeError("罹붾뱾 ?곗씠???놁쓬 (API/?ㅽ듃?뚰겕 ?뺤씤)")
+            raise RuntimeError("캔들 데이터 없음 (API/네트워크 확인)")
 
         _status.progress_pct = 35.0
         _status.phase = "simulate"
-        _status.message = "?쒕??덉씠???ㅽ뻾"
+        _status.message = "시뮬레이션 실행 중..."
+        heartbeat_task = asyncio.create_task(_simulation_heartbeat())
 
         result = await asyncio.to_thread(
             build_result,
@@ -246,6 +250,12 @@ async def _run_job(config: AppConfig, symbols: list[str], candle_limit: int, opt
             logs,
             optimize,
         )
+        if heartbeat_task:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
 
         live_cfg = _config_supplier() if _config_supplier else config
         result = _merge_history_sl_tp(result, live_cfg)
@@ -258,13 +268,37 @@ async def _run_job(config: AppConfig, symbols: list[str], candle_limit: int, opt
         rec = result.recommendation
         if rec:
             _status.message = (
-                f"?꾨즺 ??score {rec.min_score} SL {rec.stop_loss_pct}% TP {rec.take_profit_pct}% "
-                f"?밸쪧 {result.metrics.win_rate}%"
+                f"완료 · score {rec.min_score} SL {rec.stop_loss_pct}% TP {rec.take_profit_pct}% "
+                f"승률 {result.metrics.win_rate}%"
             )
         else:
-            _status.message = "?꾨즺"
+            _status.message = "완료"
         logger.info("Backtest %s done PnL=%s", result.id, result.metrics.total_pnl)
+
+    except asyncio.CancelledError:
+        if heartbeat_task:
+            heartbeat_task.cancel()
+        # 사용자가 취소한 경우
+        logger.info("Backtest cancelled by user")
+        _status.phase = "cancelled"
+        _status.message = "백테스트 취소됨"
+        _status.progress_pct = 0.0
+        cancelled = BacktestResult(
+            id=f"cancelled-{uuid.uuid4().hex[:8]}",
+            status="cancelled",
+            started_at=utc_now_iso(),
+            finished_at=utc_now_iso(),
+            strategy_mode=config.strategy_mode.value,
+            symbols=symbols,
+            logs=logs,
+            error="사용자 취소",
+        )
+        _latest = cancelled
+        raise  # CancelledError는 반드시 재발생
+
     except Exception as e:
+        if heartbeat_task:
+            heartbeat_task.cancel()
         logger.exception("Backtest failed")
         logs.append(BacktestLogEntry(ts=utc_now_iso(), level="error", message=str(e)))
         fail = BacktestResult(
@@ -282,6 +316,8 @@ async def _run_job(config: AppConfig, symbols: list[str], candle_limit: int, opt
         _status.phase = "error"
         _status.message = str(e)
     finally:
+        if heartbeat_task and not heartbeat_task.done():
+            heartbeat_task.cancel()
         _status.running = False
 
 
@@ -306,8 +342,28 @@ async def start_backtest(
     return True, "백테스트 시작"
 
 
+async def cancel_backtest() -> tuple[bool, str]:
+    """실행 중인 백테스트를 취소합니다."""
+    global _task, _status
+    if not _status.running:
+        return False, "실행 중인 백테스트가 없습니다"
+    if _task is None or _task.done():
+        _status.running = False
+        return False, "취소할 백테스트 태스크가 없습니다"
+    _task.cancel()
+    try:
+        await asyncio.wait_for(asyncio.shield(_task), timeout=3.0)
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        pass
+    _status.running = False
+    _status.phase = "cancelled"
+    _status.message = "백테스트 취소됨"
+    _status.progress_pct = 0.0
+    logger.info("Backtest cancelled by user request")
+    return True, "백테스트가 취소되었습니다"
+
+
 async def _background_loop() -> None:
-    """Server start -> run backtest in a loop until shutdown (no button needed)."""
     delay = max(0, min(30, settings.backtest_start_delay_sec))
     if delay > 0:
         await asyncio.sleep(delay)
@@ -384,7 +440,7 @@ def stop_background_loop() -> None:
 def apply_recommendation(config: AppConfig) -> tuple[bool, str, dict[str, Any]]:
     latest = get_latest()
     if not latest or not latest.recommendation:
-        return False, "?곸슜??異붿쿇 ?놁쓬 (諛깊뀒?ㅽ듃 癒쇱? ?ㅽ뻾)", {}
+        return False, "적용할 추천이 없음 (백테스트 먼저 실행)", {}
     rec = latest.recommendation
     changes: dict[str, Any] = {
         "min_score": rec.min_score,
@@ -395,7 +451,12 @@ def apply_recommendation(config: AppConfig) -> tuple[bool, str, dict[str, Any]]:
         changes["stop_loss_pct"] = rec.stop_loss_pct
     if rec.take_profit_pct > 0:
         changes["take_profit_pct"] = rec.take_profit_pct
-    msg = f"min_score ??{rec.min_score}"
+    if rec.profit_protect_trigger_pct > 0:
+        changes["profit_protect_trigger_pct"] = rec.profit_protect_trigger_pct
+        changes["profit_protect_confirm_sec"] = rec.profit_protect_confirm_sec
+    msg = f"min_score {rec.min_score}"
     if rec.stop_loss_pct > 0 and rec.take_profit_pct > 0:
         msg += f", SL {rec.stop_loss_pct}% / TP {rec.take_profit_pct}%"
-    return True, msg + " ?곸슜", changes
+    if rec.profit_protect_trigger_pct > 0:
+        msg += f", 보호 {rec.profit_protect_trigger_pct}% of TP / {rec.profit_protect_confirm_sec}초"
+    return True, msg + " 적용", changes

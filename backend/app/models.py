@@ -55,6 +55,8 @@ class AppConfig(BaseModel):
     margin_mode: str = "isolated"
     stop_loss_pct: float = 2.0
     take_profit_pct: float = 3.0
+    profit_protect_trigger_pct: float = Field(default=3.0, ge=0.0, le=100.0)
+    profit_protect_confirm_sec: int = Field(default=10, ge=0, le=300)
     trailing_stop: bool = True
     allow_short: bool = True
     position_side: PositionSideMode = PositionSideMode.AUTO
@@ -100,6 +102,8 @@ class Position(BaseModel):
     auto_tp_disabled: bool = False
     auto_profit_protect_disabled: bool = False
     trailing_high: float = 0.0
+    profit_protect_armed_at: float = 0.0
+    profit_protect_floor_pct: float = 0.0
     strategy_mode: StrategyMode = StrategyMode.SCALP
     instrument_type: InstrumentType = InstrumentType.SWAP
     entry_reason: str = ""

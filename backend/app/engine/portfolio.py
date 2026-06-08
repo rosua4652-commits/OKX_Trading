@@ -282,6 +282,9 @@ class PortfolioManager:
 
         self.available += margin + pnl
         self.realized_pnl += pnl
+        close_type = classify_close_type(reason)
+        if pnl < 0 and close_type == "tp":
+            close_type = "sl"
 
         trade = TradeRecord(
             id=str(uuid.uuid4())[:8],
@@ -292,7 +295,7 @@ class PortfolioManager:
             pnl=round(pnl, 4),
             pnl_pct=round(pnl_pct, 2),
             reason=reason,
-            close_type=classify_close_type(reason),
+            close_type=close_type,
             position_side=pos.side.value,
             entry_price=pos.entry_price,
             exit_price=exit_price,

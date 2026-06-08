@@ -1,31 +1,78 @@
-"""Exit rules: stop loss, take profit, trailing stop."""
+"""Exit rules: stop loss, take profit, and delayed profit protection."""
 
 from __future__ import annotations
 
+import time
+
 from app.config import settings
-from app.models import AppConfig, Position, PositionSide, StrategyMode
+from app.models import AppConfig, Position, StrategyMode
 from app.strategy_utils import sl_tp_pcts
 
 
-def _profit_giveback_exit(pos: Position, config: AppConfig, tp_pct: float) -> tuple[bool, str]:
+def _fee_buffer_roi(pos: Position, config: AppConfig) -> float:
+    """Minimum ROI% where profit remains after round-trip fees and leverage."""
+    lev = max(1, pos.leverage or config.leverage or 1)
+    round_trip_fee_roi = settings.trading_fee_pct * lev * 2
+    return max(0.8, round_trip_fee_roi * 1.5 + 0.4)
+
+
+def _profit_protect_floor_pct(pos: Position, config: AppConfig, tp_pct: float) -> float:
+    trigger_ratio = max(0.0, float(config.profit_protect_trigger_pct or 0.0)) / 100.0
+    tp_based_trigger = max(0.0, tp_pct * trigger_ratio)
+    fee_floor = _fee_buffer_roi(pos, config)
+    if tp_pct > 0:
+        return max(fee_floor, min(tp_based_trigger, tp_pct))
+    return fee_floor
+
+
+def _profit_protect_exit(pos: Position, config: AppConfig, tp_pct: float) -> tuple[bool, str]:
     if pos.strategy_mode != StrategyMode.SCALP or not config.trailing_stop:
         return False, ""
     if pos.auto_profit_protect_disabled or pos.entry_price <= 0:
         return False, ""
-    lev = max(1, pos.leverage or config.leverage or 1)
-    if pos.side == PositionSide.LONG:
-        if pos.trailing_high <= pos.entry_price:
-            return False, ""
-        peak_roi = ((pos.trailing_high - pos.entry_price) / pos.entry_price) * 100 * lev
-    else:
-        if pos.trailing_high <= 0 or pos.trailing_high >= pos.entry_price:
-            return False, ""
-        peak_roi = ((pos.entry_price - pos.trailing_high) / pos.entry_price) * 100 * lev
+    if pos.unrealized_pnl <= 0:
+        pos.profit_protect_armed_at = 0.0
+        pos.profit_protect_floor_pct = 0.0
+        return False, ""
+
+    floor_pct = _profit_protect_floor_pct(pos, config, tp_pct)
     current_roi = pos.unrealized_pnl_pct
-    giveback = peak_roi - current_roi
-    effective_tp_pct = min(max(tp_pct, 0.0), 10.0)
-    if peak_roi >= max(2.0, effective_tp_pct * 0.35) and giveback >= max(1.0, peak_roi * 0.35):
-        return True, f"수익 보호 익절 (최고 {peak_roi:.1f}% -> 현재 {current_roi:.1f}%)"
+    is_bt = str(pos.id).startswith("bt:")
+    if is_bt:
+        try:
+            now = float(str(pos.id).split(":", 1)[1])
+        except (IndexError, ValueError):
+            now = 0.0
+    else:
+        now = time.time()
+
+    if current_roi >= floor_pct:
+        if pos.profit_protect_armed_at <= 0:
+            pos.profit_protect_armed_at = now
+            pos.profit_protect_floor_pct = floor_pct
+            return False, ""
+        hold_req = (
+            (1 if int(config.profit_protect_confirm_sec or 0) > 0 else 0)
+            if is_bt
+            else max(0, int(config.profit_protect_confirm_sec or 0))
+        )
+        if now - pos.profit_protect_armed_at < hold_req:
+            return False, ""
+        pos.profit_protect_floor_pct = floor_pct
+        return False, ""
+
+    armed = pos.profit_protect_armed_at > 0
+    hold_req = (
+        (1 if int(config.profit_protect_confirm_sec or 0) > 0 else 0)
+        if is_bt
+        else max(0, int(config.profit_protect_confirm_sec or 0))
+    )
+    confirmed = armed and (now - pos.profit_protect_armed_at >= hold_req)
+    if confirmed and current_roi < max(floor_pct, pos.profit_protect_floor_pct):
+        return True, f"수익 보호 익절 (보호선 {floor_pct:.1f}% 이탈, 현재 {current_roi:.1f}%)"
+
+    if not armed:
+        pos.profit_protect_floor_pct = 0.0
     return False, ""
 
 
@@ -50,36 +97,19 @@ def should_exit(
     if not tp_disabled and pos.tp_usdt > 0 and pos.unrealized_pnl >= abs(pos.tp_usdt):
         return True, f"익절 PnL(USDT {pos.tp_usdt:g})"
 
-    if pos.side == PositionSide.LONG:
-        if not sl_disabled and price <= pos.stop_loss:
-            return True, f"손절 PnL({sl_pct}%)"
-        if not tp_disabled and price >= pos.take_profit:
-            return True, f"익절 PnL({tp_pct}%)"
-        if not tp_disabled:
-            protect_exit, protect_reason = _profit_giveback_exit(pos, config, tp_pct)
-            if protect_exit:
-                return True, protect_reason
-        if not sl_disabled and config.trailing_stop and pos.trailing_high > pos.entry_price:
-            activate = pos.entry_price * (1 + settings.trailing_activate_pct / 100)
-            if pos.trailing_high >= activate:
-                trail_stop = pos.trailing_high * (1 - settings.trailing_distance_pct / 100)
-                if price <= trail_stop:
-                    return True, "트레일링 스탑"
-    else:
-        if not sl_disabled and price >= pos.stop_loss:
-            return True, f"손절 PnL({sl_pct}%)"
-        if not tp_disabled and price <= pos.take_profit:
-            return True, f"익절 PnL({tp_pct}%)"
-        if not tp_disabled:
-            protect_exit, protect_reason = _profit_giveback_exit(pos, config, tp_pct)
-            if protect_exit:
-                return True, protect_reason
-        if not sl_disabled and config.trailing_stop and pos.trailing_high < pos.entry_price:
-            activate = pos.entry_price * (1 - settings.trailing_activate_pct / 100)
-            if pos.trailing_high <= activate:
-                trail_stop = pos.trailing_high * (1 + settings.trailing_distance_pct / 100)
-                if price >= trail_stop:
-                    return True, "트레일링 스탑"
+    if not tp_disabled:
+        protect_exit, protect_reason = _profit_protect_exit(pos, config, tp_pct)
+        if protect_exit:
+            return True, protect_reason
+
+    if not sl_disabled and pos.side.value == "long" and price <= pos.stop_loss:
+        return True, f"손절 PnL({sl_pct}%)"
+    if not tp_disabled and pos.side.value == "long" and price >= pos.take_profit:
+        return True, f"익절 PnL({tp_pct}%)"
+    if not sl_disabled and pos.side.value == "short" and price >= pos.stop_loss:
+        return True, f"손절 PnL({sl_pct}%)"
+    if not tp_disabled and pos.side.value == "short" and price <= pos.take_profit:
+        return True, f"익절 PnL({tp_pct}%)"
 
     pnl_pct = pos.unrealized_pnl_pct
     if (

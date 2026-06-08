@@ -3,11 +3,24 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from typing import Any, Optional
 
 from app.config import settings
 
 logger = logging.getLogger("oat.okx")
+
+
+def _is_retryable_socket_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return (
+        "winerror 10035" in text
+        or "temporarily unavailable" in text
+        or "timed out" in text
+        or "timeout" in text
+        or "connection aborted" in text
+    )
 
 
 def _is_pos_side_error(result: Any) -> bool:
@@ -34,6 +47,7 @@ class OKXClient:
         self._account = None
         self._public = None
         self.last_error = ""
+        self._api_lock = threading.RLock()
 
     def _ensure_imports(self) -> None:
         if self._market is not None:
@@ -71,28 +85,38 @@ class OKXClient:
     def _ok(self, result: dict) -> bool:
         return isinstance(result, dict) and result.get("code") == "0"
 
+    def _call_okx(self, label: str, fn, *args, **kwargs):
+        last_exc: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                with self._api_lock:
+                    return fn(*args, **kwargs)
+            except Exception as e:
+                last_exc = e
+                if not _is_retryable_socket_error(e) or attempt >= 3:
+                    break
+                logger.warning("%s retry %s/3 after socket busy: %s", label, attempt, e)
+                time.sleep(0.25 * attempt)
+        if last_exc is not None:
+            logger.error("%s error: %s", label, last_exc)
+        return None
+
     def get_tickers(self, inst_type: str = "SWAP") -> list[dict[str, Any]]:
         self._ensure_imports()
         if not self._market:
             return []
-        try:
-            result = self._market.get_tickers(instType=inst_type)
-            if self._ok(result):
-                return result.get("data", [])
-        except Exception as e:
-            logger.error("get_tickers error: %s", e)
+        result = self._call_okx("get_tickers", self._market.get_tickers, instType=inst_type)
+        if self._ok(result):
+            return result.get("data", [])
         return []
 
     def get_ticker(self, inst_id: str) -> Optional[dict[str, Any]]:
         self._ensure_imports()
         if not self._market:
             return None
-        try:
-            result = self._market.get_ticker(instId=inst_id)
-            if self._ok(result) and result.get("data"):
-                return result["data"][0]
-        except Exception as e:
-            logger.error("get_ticker error: %s", e)
+        result = self._call_okx("get_ticker", self._market.get_ticker, instId=inst_id)
+        if self._ok(result) and result.get("data"):
+            return result["data"][0]
         return None
 
     def get_candles(
@@ -104,12 +128,15 @@ class OKXClient:
         self._ensure_imports()
         if not self._market:
             return []
-        try:
-            result = self._market.get_candlesticks(instId=inst_id, bar=bar, limit=str(limit))
-            if self._ok(result):
-                return result.get("data", [])
-        except Exception as e:
-            logger.error("get_candles error: %s", e)
+        result = self._call_okx(
+            "get_candles",
+            self._market.get_candlesticks,
+            instId=inst_id,
+            bar=bar,
+            limit=str(limit),
+        )
+        if self._ok(result):
+            return result.get("data", [])
         return []
 
     def get_history_candles(
@@ -123,22 +150,19 @@ class OKXClient:
         self._ensure_imports()
         if not self._market:
             return []
-        try:
-            params: dict[str, Any] = {"instId": inst_id, "bar": bar, "limit": str(limit)}
-            if before:
-                params["before"] = before
-            if after:
-                params["after"] = after
-            fn = getattr(self._market, "get_history_candlesticks", None)
-            if fn is None:
-                fn = getattr(self._market, "get_history_candles", None)
-            if fn is None:
-                return self.get_candles(inst_id, bar, limit)
-            result = fn(**params)
-            if self._ok(result):
-                return result.get("data", [])
-        except Exception as e:
-            logger.error("get_history_candles error: %s", e)
+        params: dict[str, Any] = {"instId": inst_id, "bar": bar, "limit": str(limit)}
+        if before:
+            params["before"] = before
+        if after:
+            params["after"] = after
+        fn = getattr(self._market, "get_history_candlesticks", None)
+        if fn is None:
+            fn = getattr(self._market, "get_history_candles", None)
+        if fn is None:
+            return self.get_candles(inst_id, bar, limit)
+        result = self._call_okx("get_history_candles", fn, **params)
+        if self._ok(result):
+            return result.get("data", [])
         return []
 
     def get_instruments(self, inst_type: str = "SWAP") -> list[dict[str, Any]]:

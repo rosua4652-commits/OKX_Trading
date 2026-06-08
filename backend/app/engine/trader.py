@@ -21,7 +21,7 @@ from app.engine.activity_log import push_activity
 from app.config_changelog import format_config_changes
 from app.backtest.live_feedback import record_loss_feedback, reset_feedback, get_symbol_loss_reason
 from app.config_public import config_for_client
-from app.engine.exit_rules import apply_strategy_defaults, should_exit
+from app.engine.exit_rules import _fee_buffer_roi, apply_strategy_defaults, should_exit
 from app.order_sizing import entry_cost_usdt, resolve_order_size_usdt
 from app.strategy_utils import active_strategies
 from app.engine.portfolio import PortfolioManager
@@ -107,6 +107,25 @@ class TradingEngine:
             return
         self._reentry_watchlist[inst_id] = side
         self._log("risk", f"{inst_id} 손절 후 재진입 감시 시작 (같은 방향 재진입 시 조건 확인)", "warn")
+
+    def _mark_reentry_watch_v2(self, inst_id: str, side: PositionSide, reason: str, pnl: float | None = None) -> None:
+        text = reason or ""
+        lower = text.lower()
+        is_loss_exit = (pnl is not None and pnl < 0) or ("손절" in text) or ("stop" in lower)
+        is_profit_protect = (
+            pnl is not None
+            and pnl > 0
+            and (("수익 보호" in text) or ("이익 보호" in text) or ("트레일링 수익보호" in text))
+        )
+        if not (is_loss_exit or is_profit_protect):
+            return
+        self._reentry_watchlist[inst_id] = side
+        label = "보호 익절" if is_profit_protect else "손절"
+        self._log(
+            "risk",
+            f"{inst_id} {label} 후 재진입 감시 시작 (같은 방향 재돌파/반대 전환 확인)",
+            "warn",
+        )
 
     def _ema_list(self, values: list[float], period: int) -> list[float]:
         if not values:
@@ -255,7 +274,8 @@ class TradingEngine:
         if pos.side == PositionSide.SHORT and st_dir == 1 and current > st_line:
             return True, f"Supertrend 상승 전환 (ADX {adx_val:.0f})"
 
-        if pos.unrealized_pnl <= 0:
+        fee_buffer = _fee_buffer_roi(pos, self.config)
+        if pos.unrealized_pnl <= 0 or pos.unrealized_pnl_pct < fee_buffer:
             return False, ""
 
         if pos.side == PositionSide.LONG:
@@ -694,13 +714,15 @@ class TradingEngine:
             pos = self.portfolio.positions.get(inst_id)
             if not pos:
                 continue
-            trend_exit, trend_reason = await self._trend_break_signal(pos)
-            if trend_exit:
-                await self._close_position(inst_id, f"추세 이탈 청산 - {trend_reason}")
-                continue
             exit_flag, reason = should_exit(pos, self.config)
             if exit_flag:
                 await self._close_position(inst_id, reason)
+                continue
+            if pos.unrealized_pnl > 0:
+                continue
+            trend_exit, trend_reason = await self._trend_break_signal(pos)
+            if trend_exit:
+                await self._close_position(inst_id, f"추세 이탈 청산 - {trend_reason}")
                 continue
             advanced_exit, advanced_reason = await self._advanced_exit_signal(pos)
             if advanced_exit:
@@ -1120,7 +1142,7 @@ class TradingEngine:
             trade = self.portfolio.close_position(inst_id, price, reason)
             await self._sync_live_if_needed()
             if trade:
-                self._mark_reentry_watch(inst_id, pos.side, reason, trade.pnl)
+                self._mark_reentry_watch_v2(inst_id, pos.side, reason, trade.pnl)
                 record_loss_feedback(trade)
                 self._log(
                     "exit",
@@ -1133,7 +1155,7 @@ class TradingEngine:
 
         trade = self.portfolio.close_position(inst_id, price, reason)
         if trade:
-            self._mark_reentry_watch(inst_id, pos.side, reason, trade.pnl)
+            self._mark_reentry_watch_v2(inst_id, pos.side, reason, trade.pnl)
             record_loss_feedback(trade)
             self._log(
                 "exit",

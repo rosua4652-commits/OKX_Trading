@@ -1,3 +1,7 @@
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 # OKX Auto Trader
 
 OKX USDT 선물/스왑 자동매매 프로그램입니다. 실거래와 모의투자는 같은 후보 평가, 같은 진입 방향 판단, 같은 청산 규칙을 최대한 공유하도록 구성되어 있습니다. 단, 실거래에서는 OKX API의 주문 거절, 최소 주문 수량, 포지션 모드, 잔고 부족 같은 거래소 조건이 추가로 적용됩니다.
@@ -160,3 +164,290 @@ cd frontend
 npm.cmd run build
 ```
 
+=======
+# Ollama Agent Server
+
+Ollama Agent Server는 Ollama가 설치된 Linux 서버에서 실행되는 원격 코딩/디버깅 에이전트 API입니다. 다른 PC는 HTTP API로 작업을 요청하고, 이 서버는 실제 Ollama 호스트 내부에서 명령 실행, 파일 확인, 테스트, 디버깅을 수행한 뒤 최종 답변과 실행 로그를 JSON으로 반환합니다.
+
+## 목표
+
+- Claude Code, Codex처럼 “질문 → 서버 내부 작업 수행 → 결과 반환” 흐름을 Ollama 기반으로 제공합니다.
+- Ollama 모델은 JSON 액션을 생성하고, 서버는 해당 액션에 따라 Linux shell 명령을 실행합니다.
+- 각 명령의 `stdout`, `stderr`, 종료 코드, 타임아웃 여부를 API 응답에 포함합니다.
+=======
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+# Ollama Agent Server
+
+Ollama Agent Server는 Ollama가 설치된 Linux 서버에서 실행되는 원격 코딩/디버깅 에이전트 API + 웹 콘솔입니다. 다른 PC는 브라우저 또는 HTTP API로 작업을 요청하고, 이 서버는 실제 Ollama 호스트 내부에서 명령 실행, 파일 확인, 테스트, 디버깅을 수행한 뒤 최종 답변과 실행 로그를 반환합니다.
+
+> 현재 버전은 “최종 완성품”이 아니라 **Codex/Claude Code류 제품으로 확장하기 위한 실행 가능한 MVP**입니다. 이번 버전에는 API, 백그라운드 작업, Codex 스타일 웹 UI, 실행 로그 타임라인이 포함됩니다. 멀티 유저 계정/결제/컨테이너 격리/장기 작업 영속화 같은 클라우드 서비스 기능은 다음 단계에서 붙이는 구조입니다.
+
+## 포함된 기능
+
+- Claude Code, Codex처럼 “질문 → 서버 내부 작업 수행 → 결과 반환” 흐름을 Ollama 기반으로 제공합니다.
+- Ollama 모델은 JSON 액션을 생성하고, 서버는 해당 액션에 따라 Linux shell 명령을 실행합니다.
+- 각 명령의 `stdout`, `stderr`, 종료 코드, 타임아웃 여부를 API 응답과 UI 타임라인에 표시합니다.
+- `/v1/run` 동기 API와 `/v1/jobs` + `/v1/jobs/{job_id}` 비동기 작업 API를 모두 제공합니다.
+- `/` 또는 `/app`에서 Codex 화면과 비슷한 어두운 콘솔 UI를 제공합니다.
+- API 키 인증 옵션으로 원격 PC 접근을 제한할 수 있습니다.
+<<<<<<< ours
+<<<<<<< ours
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+
+## 설치
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
+
+Ollama 서버가 같은 머신에서 실행 중인지 확인하세요.
+
+```bash
+ollama serve
+ollama pull llama3.1
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+```
+
+## 실행
+=======
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+# 코딩 작업이면 아래 같은 코드 모델도 권장합니다.
+ollama pull qwen2.5-coder
+```
+
+## 실행법
+
+### 1) 기본 실행
+<<<<<<< ours
+<<<<<<< ours
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+
+```bash
+export OLLAMA_AGENT_DEFAULT_MODEL=llama3.1
+export OLLAMA_AGENT_WORKSPACE_ROOT=/srv/agent-workspaces
+ollama-agent-server
+```
+
+기본 서버 주소는 `0.0.0.0:8080`이고 기본 Ollama 주소는 `http://127.0.0.1:11434`입니다.
+
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+## 보안 옵션
+
+원격 PC에서 호출할 예정이면 API 키 사용을 권장합니다.
+=======
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+### 2) 다른 PC에서 웹 UI 접속
+
+브라우저에서 아래 주소로 접속합니다.
+
+```text
+http://SERVER_IP:8080/
+```
+
+화면 왼쪽에서 모델, 워크스페이스, 최대 단계, API 키를 설정하고 아래 입력창에 작업을 넣으면 됩니다.
+
+예시 프롬프트:
+
+```text
+이 프로젝트 구조를 확인하고 테스트를 실행한 뒤 실패 원인을 고쳐줘. 마지막에는 변경 파일과 실행한 테스트를 정리해줘.
+```
+
+### 3) 원격 접속용 API 키 켜기
+
+공개망 또는 같은 사무실 네트워크에서 사용할 때는 API 키를 켜세요.
+<<<<<<< ours
+<<<<<<< ours
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+
+```bash
+export OLLAMA_AGENT_REQUIRE_API_KEY=true
+export OLLAMA_AGENT_API_KEY='change-me'
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+```
+
+요청 시 `X-API-Key` 헤더를 포함합니다.
+=======
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+ollama-agent-server
+```
+
+웹 UI의 왼쪽 `서버 API Key` 입력칸에 같은 값을 입력합니다. API 호출 시에는 `X-API-Key` 헤더를 포함합니다.
+<<<<<<< ours
+<<<<<<< ours
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+
+## API 예시
+
+### 상태 확인
+
+```bash
+curl http://SERVER_IP:8080/health
+```
+
+### 모델 목록
+
+```bash
+curl -H 'X-API-Key: change-me' http://SERVER_IP:8080/v1/models
+```
+
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+### 작업 실행
+=======
+### 동기 작업 실행
+
+작업이 끝날 때까지 HTTP 요청이 유지됩니다.
+>>>>>>> theirs
+=======
+### 동기 작업 실행
+
+작업이 끝날 때까지 HTTP 요청이 유지됩니다.
+>>>>>>> theirs
+=======
+### 동기 작업 실행
+
+작업이 끝날 때까지 HTTP 요청이 유지됩니다.
+>>>>>>> theirs
+
+```bash
+curl -X POST http://SERVER_IP:8080/v1/run \
+  -H 'Content-Type: application/json' \
+  -H 'X-API-Key: change-me' \
+  -d '{
+    "model": "llama3.1",
+    "workspace": "demo-project",
+    "prompt": "현재 디렉터리 파일을 확인하고 README가 없으면 간단히 만들어줘.",
+    "max_steps": 8
+  }'
+```
+
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+응답은 최종 답변과 각 단계의 명령 실행 결과를 포함합니다.
+=======
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+### 비동기 작업 실행
+
+UI는 이 방식을 사용합니다. 먼저 작업을 만들고:
+
+```bash
+curl -X POST http://SERVER_IP:8080/v1/jobs \
+  -H 'Content-Type: application/json' \
+  -H 'X-API-Key: change-me' \
+  -d '{
+    "model": "qwen2.5-coder",
+    "workspace": "demo-project",
+    "prompt": "테스트를 실행하고 실패를 고쳐줘.",
+    "max_steps": 12
+  }'
+```
+
+반환된 `job_id`로 진행 상황을 조회합니다.
+
+```bash
+curl -H 'X-API-Key: change-me' http://SERVER_IP:8080/v1/jobs/JOB_ID
+```
+<<<<<<< ours
+<<<<<<< ours
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+
+## 환경 변수
+
+모든 환경 변수는 `OLLAMA_AGENT_` 접두사를 사용합니다.
+
+| 변수 | 기본값 | 설명 |
+| --- | --- | --- |
+| `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama API 주소 |
+| `DEFAULT_MODEL` | `llama3.1` | 기본 모델 |
+| `HOST` | `0.0.0.0` | API 서버 bind host |
+| `PORT` | `8080` | API 서버 port |
+| `WORKSPACE_ROOT` | 현재 디렉터리 | 작업 디렉터리 루트 |
+| `COMMAND_TIMEOUT_SECONDS` | `60` | 명령당 타임아웃 |
+| `MAX_STEPS` | `12` | 에이전트 최대 반복 횟수 |
+| `MAX_COMMAND_OUTPUT_CHARS` | `12000` | 명령 출력 최대 보존 길이 |
+| `REQUIRE_API_KEY` | `false` | API 키 인증 사용 여부 |
+| `API_KEY` | 없음 | API 키 |
+
+예를 들어 `DEFAULT_MODEL`은 실제 환경 변수 이름으로 `OLLAMA_AGENT_DEFAULT_MODEL`입니다.
+
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+## 현재 한계
+
+- 초기 버전은 동기식 `/v1/run` 엔드포인트만 제공합니다.
+- Ollama 모델이 지시한 shell 명령을 실제로 실행하므로 격리된 VM, 컨테이너, 별도 계정에서 운영하는 것을 권장합니다.
+- 장기 실행 작업 큐, 브라우저 조작, 멀티 세션 관리는 후속 단계에서 확장할 수 있습니다.
+>>>>>>> theirs
+=======
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+## 클라우드 서비스로 확장할 다음 단계
+
+에이전트 기반 코딩 AI와 클라우드 서비스로 완성하려면 아래 기능을 추가하는 것이 좋습니다.
+
+1. **작업 격리**: 사용자/프로젝트별 Docker 컨테이너 또는 VM에서 명령 실행.
+2. **영속 작업 큐**: 현재 in-memory job store를 Redis/RQ, Celery, Postgres 기반 큐로 교체.
+3. **계정/권한**: 사용자 로그인, 프로젝트 권한, API 토큰 관리.
+4. **파일 탐색/편집 UI**: 웹에서 파일 트리, diff, 패치 승인 기능 제공.
+5. **실시간 스트리밍**: polling 대신 WebSocket/SSE로 토큰과 명령 로그를 즉시 전달.
+6. **감사 로그/비용 관리**: 실행 명령, 모델 호출, 사용량, 실패 로그 저장.
+7. **배포 구성**: Nginx TLS reverse proxy, systemd service, 컨테이너 이미지, 백업 정책.
+
+## 보안 주의
+
+Ollama 모델이 지시한 shell 명령을 실제로 실행합니다. 운영 환경에서는 반드시 격리된 VM/컨테이너/별도 Linux 계정에서 실행하고, 워크스페이스 루트를 제한하며, API 키와 방화벽을 사용하세요.
+<<<<<<< ours
+<<<<<<< ours
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs

@@ -118,6 +118,11 @@ export async function applyBacktest(): Promise<{
   return res.json();
 }
 
+export async function cancelBacktest(): Promise<{ ok: boolean; message?: string }> {
+  const res = await fetch(`${BASE}/api/backtest/cancel`, { method: "POST" });
+  return res.json();
+}
+
 export async function closePosition(instId: string) {
   const res = await fetch(`${BASE}/api/order/close`, {
     method: "POST",

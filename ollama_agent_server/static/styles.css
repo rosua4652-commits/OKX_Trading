@@ -1,0 +1,62 @@
+:root {
+  color-scheme: dark;
+  --bg: #080b12;
+  --panel: #101521;
+  --panel-2: #151b2a;
+  --text: #edf2ff;
+  --muted: #8994aa;
+  --line: #263044;
+  --accent: #65d0ff;
+  --ok: #57d68d;
+  --bad: #ff6b7a;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: radial-gradient(circle at top left, #19253c 0, var(--bg) 36rem);
+  color: var(--text);
+  font: 14px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.shell { display: grid; grid-template-columns: 320px 1fr; min-height: 100vh; }
+.sidebar { border-right: 1px solid var(--line); background: rgba(16, 21, 33, 0.9); padding: 22px; overflow: auto; }
+.brand { display: flex; gap: 12px; align-items: center; margin-bottom: 24px; }
+.brand strong { display: block; font-size: 18px; }
+.brand small, .muted { color: var(--muted); }
+.orb { width: 34px; height: 34px; border-radius: 50%; background: linear-gradient(135deg, var(--accent), #9879ff); box-shadow: 0 0 24px #65d0ff66; }
+label { display: grid; gap: 7px; color: #c8d1e2; margin: 13px 0; }
+input, textarea, button { border: 1px solid var(--line); border-radius: 12px; font: inherit; }
+input, textarea { width: 100%; color: var(--text); background: #080d17; padding: 11px 12px; outline: none; }
+input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px #65d0ff1a; }
+button { color: #07101d; background: var(--accent); font-weight: 800; padding: 11px 14px; cursor: pointer; }
+button.secondary { width: 100%; background: #202a3d; color: var(--text); }
+button:disabled { opacity: .55; cursor: not-allowed; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.status-card { margin-top: 18px; padding: 14px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 16px; }
+.status-card h2 { margin: 0 0 8px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+pre { margin: 0; white-space: pre-wrap; word-break: break-word; color: #d8e3f8; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.workspace { display: grid; grid-template-rows: auto 1fr auto; min-width: 0; }
+.topbar { display: flex; justify-content: space-between; gap: 16px; align-items: center; padding: 24px 30px; border-bottom: 1px solid var(--line); background: #0b101acc; backdrop-filter: blur(10px); }
+.eyebrow { margin: 0; color: var(--accent); font-weight: 800; letter-spacing: .12em; text-transform: uppercase; font-size: 12px; }
+h1 { margin: 3px 0 0; font-size: clamp(20px, 3vw, 30px); }
+.pill { border: 1px solid var(--line); border-radius: 999px; padding: 7px 12px; color: var(--muted); background: #0d1320; font-weight: 800; }
+.pill.running { color: var(--accent); border-color: #65d0ff80; }
+.pill.succeeded { color: var(--ok); border-color: #57d68d80; }
+.pill.failed { color: var(--bad); border-color: #ff6b7a80; }
+.transcript { padding: 28px 30px; overflow: auto; display: flex; flex-direction: column; gap: 18px; }
+.message { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 12px; }
+.avatar { width: 42px; height: 42px; border-radius: 13px; display: grid; place-items: center; background: #202a3d; color: var(--accent); font-weight: 900; }
+.message.user .avatar { color: #fff; background: #3952ff; }
+.bubble { background: rgba(16, 21, 33, .86); border: 1px solid var(--line); border-radius: 18px; padding: 15px; min-width: 0; }
+.bubble p { margin: 8px 0 0; color: #cbd6e8; }
+.step { border: 1px solid var(--line); border-radius: 14px; margin-top: 12px; overflow: hidden; background: #080d17; }
+.step-header { padding: 10px 12px; background: #151b2a; display: flex; justify-content: space-between; gap: 10px; color: #dbe7fb; }
+.code { padding: 12px; overflow: auto; max-height: 300px; }
+.stderr { color: #ffb1ba; }
+.stdout { color: #c5ffd9; }
+.composer { border-top: 1px solid var(--line); padding: 18px 30px 24px; background: #0b101a; }
+.composer textarea { resize: vertical; min-height: 96px; }
+.composer-actions { display: flex; justify-content: space-between; align-items: center; gap: 14px; margin-top: 12px; }
+@media (max-width: 860px) {
+  .shell { grid-template-columns: 1fr; }
+  .sidebar { border-right: 0; border-bottom: 1px solid var(--line); }
+}

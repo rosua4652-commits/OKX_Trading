@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ollama Agent Console</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="orb"></span>
+          <div>
+            <strong>Ollama Agent</strong>
+            <small>Codex-like remote console</small>
+          </div>
+        </div>
+        <label>서버 API Key
+          <input id="apiKey" type="password" placeholder="필요할 때만 입력" autocomplete="off" />
+        </label>
+        <label>모델
+          <input id="model" placeholder="llama3.1, qwen2.5-coder..." />
+        </label>
+        <label>워크스페이스
+          <input id="workspace" placeholder="demo-project" />
+        </label>
+        <div class="grid2">
+          <label>최대 단계
+            <input id="maxSteps" type="number" min="1" max="50" value="12" />
+          </label>
+          <label>온도
+            <input id="temperature" type="number" min="0" max="2" step="0.1" value="0.2" />
+          </label>
+        </div>
+        <button id="refresh" class="secondary">상태/모델 새로고침</button>
+        <section class="status-card">
+          <h2>Host</h2>
+          <pre id="health">연결 대기 중...</pre>
+        </section>
+        <section class="status-card">
+          <h2>Models</h2>
+          <pre id="models">-</pre>
+        </section>
+      </aside>
+
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Agent Session</p>
+            <h1>서버 안에서 실행·디버깅·코딩하고 결과를 반환합니다</h1>
+          </div>
+          <span id="jobStatus" class="pill idle">idle</span>
+        </header>
+
+        <section id="transcript" class="transcript">
+          <article class="message assistant">
+            <div class="avatar">AI</div>
+            <div class="bubble">
+              <strong>준비 완료</strong>
+              <p>요청을 입력하면 백그라운드 작업을 만들고, 명령 실행 단계와 stdout/stderr를 Codex 화면처럼 타임라인으로 보여줍니다.</p>
+            </div>
+          </article>
+        </section>
+
+        <form id="promptForm" class="composer">
+          <textarea id="prompt" rows="4" placeholder="예: 이 저장소 구조를 확인하고 테스트를 실행한 뒤 오류를 고쳐줘." required></textarea>
+          <div class="composer-actions">
+            <span id="jobId" class="muted"></span>
+            <button id="send" type="submit">작업 시작</button>
+          </div>
+        </form>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

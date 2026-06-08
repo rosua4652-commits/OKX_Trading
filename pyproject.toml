@@ -1,0 +1,62 @@
+[project]
+name = "ollama-agent-server"
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+version = "0.1.0"
+=======
+version = "0.2.0"
+>>>>>>> theirs
+=======
+version = "0.2.0"
+>>>>>>> theirs
+=======
+version = "0.2.0"
+>>>>>>> theirs
+description = "Remote API server that lets Ollama inspect, execute, debug, and code inside a Linux host workspace."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.111.0",
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.2.0",
+    "requests>=2.32.0",
+    "uvicorn[standard]>=0.30.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2.0",
+]
+
+[project.scripts]
+ollama-agent-server = "ollama_agent_server.main:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+=======
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+
+[tool.hatch.build.targets.wheel]
+packages = ["ollama_agent_server"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/ollama_agent_server", "/tests", "/README.md", "/.env.example"]
+<<<<<<< ours
+<<<<<<< ours
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs

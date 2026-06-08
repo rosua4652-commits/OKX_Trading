@@ -43,13 +43,24 @@ def _clamp_score(score: float) -> float:
 
 def _clamp_sl_tp(sl: float, tp: float, current: AppConfig) -> tuple[float, float]:
     is_scalp = current.strategy_mode.value in ("scalp", "both")
-    sl = round(max(4.0, min(10.0 if is_scalp else 12.0, float(sl))), 2)
-    tp_cap = 10.0 if is_scalp else 18.0
-    min_rr = 1.15 if is_scalp else 1.4
-    max_rr = 1.8 if is_scalp else 2.4
+    # 사용자 설정값을 하한으로 존중: 설정된 SL의 50%까지는 허용
+    user_sl = current.stop_loss_pct or 3.0
+    user_tp = current.take_profit_pct or 5.0
+    sl_min = max(1.5, user_sl * 0.5)
+    sl_max = 12.0 if is_scalp else 15.0
+    sl = round(max(sl_min, min(sl_max, float(sl))), 2)
+    tp_cap = max(user_tp * 1.5, 10.0) if is_scalp else max(user_tp * 1.5, 18.0)
+    min_rr = 1.1
+    max_rr = 3.0
     tp = round(max(sl * min_rr, min(tp_cap, float(tp))), 2)
     tp = round(min(tp, sl * max_rr), 2)
     return sl, tp
+
+
+def _clamp_profit_protect(trigger: float, confirm: int) -> tuple[float, int]:
+    trigger = round(max(0.0, min(25.0, float(trigger))), 2)
+    confirm = int(max(0, min(120, int(confirm))))
+    return trigger, confirm
 
 
 def build_config_from_backtest(current: AppConfig, result: BacktestResult) -> AppConfig | None:
@@ -76,6 +87,11 @@ def build_config_from_backtest(current: AppConfig, result: BacktestResult) -> Ap
             rec.take_profit_pct,
             current,
         )
+        if rec.profit_protect_trigger_pct > 0:
+            cfg.profit_protect_trigger_pct, cfg.profit_protect_confirm_sec = _clamp_profit_protect(
+                rec.profit_protect_trigger_pct,
+                rec.profit_protect_confirm_sec,
+            )
         changed = True
 
     return cfg if changed else None
@@ -88,6 +104,8 @@ def config_changed(before: AppConfig, after: AppConfig) -> bool:
         or before.order_size_pct != after.order_size_pct
         or before.stop_loss_pct != after.stop_loss_pct
         or before.take_profit_pct != after.take_profit_pct
+        or before.profit_protect_trigger_pct != after.profit_protect_trigger_pct
+        or before.profit_protect_confirm_sec != after.profit_protect_confirm_sec
     )
 
 
@@ -108,6 +126,8 @@ def auto_apply_decision(
             "min_score": before.min_score,
             "stop_loss_pct": before.stop_loss_pct,
             "take_profit_pct": before.take_profit_pct,
+            "profit_protect_trigger_pct": before.profit_protect_trigger_pct,
+            "profit_protect_confirm_sec": before.profit_protect_confirm_sec,
             "backtest_auto_settings": before.backtest_auto_settings,
             "backtest_auto_sl_tp": before.backtest_auto_sl_tp,
         },
@@ -116,6 +136,8 @@ def auto_apply_decision(
                 "min_score": after.min_score,
                 "stop_loss_pct": after.stop_loss_pct,
                 "take_profit_pct": after.take_profit_pct,
+                "profit_protect_trigger_pct": after.profit_protect_trigger_pct,
+                "profit_protect_confirm_sec": after.profit_protect_confirm_sec,
             }
             if after is not None
             else None

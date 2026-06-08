@@ -55,6 +55,154 @@ header .build {
 
 .exit-history .exit-summary { margin-bottom: 16px; }
 .exit-history .card .sub { font-size: 0.875rem; margin-top: 6px; }
+.exit-daily-section,
+.exit-equity-section { margin-bottom: 16px; }
+.exit-date-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.exit-date-toolbar h2 { margin: 0; }
+.exit-date-toolbar select {
+  background: #0d1117;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 8px 10px;
+  min-width: 260px;
+}
+.daily-pnl-chart {
+  display: grid;
+  gap: 8px;
+}
+.daily-pnl-row {
+  display: grid;
+  grid-template-columns: 54px minmax(120px, 1fr) 90px 48px;
+  align-items: center;
+  gap: 10px;
+  background: #0d1117;
+  color: #c9d1d9;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  padding: 8px 10px;
+  text-align: left;
+}
+.daily-pnl-row:hover,
+.daily-pnl-row.active {
+  border-color: #58a6ff;
+  background: #111a25;
+}
+.daily-pnl-date,
+.daily-pnl-count {
+  color: #8b949e;
+  font-size: 0.78rem;
+}
+.daily-pnl-bars {
+  display: grid;
+  grid-template-rows: 8px 8px;
+  gap: 4px;
+}
+.daily-pnl-bar {
+  display: block;
+  min-width: 2px;
+  border-radius: 999px;
+}
+.daily-pnl-bar.profit { background: #3fb950; }
+.daily-pnl-bar.loss { background: #f85149; }
+.equity-curve-card {
+  position: relative;
+  background:
+    linear-gradient(180deg, rgba(13, 17, 23, 0.2), rgba(13, 17, 23, 0.95)),
+    #0b1016;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  padding: 14px;
+}
+.equity-curve {
+  width: 100%;
+  height: 170px;
+  display: block;
+}
+.equity-zero {
+  stroke: #30363d;
+  stroke-width: 0.5;
+  vector-effect: non-scaling-stroke;
+}
+.equity-grid {
+  stroke: #21262d;
+  stroke-width: 0.35;
+  opacity: 0.55;
+  vector-effect: non-scaling-stroke;
+}
+.equity-area {
+  opacity: 0.18;
+}
+.equity-area.profit { fill: #3fb950; }
+.equity-area.loss { fill: #f85149; }
+.equity-line {
+  fill: none;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 4px rgba(63, 185, 80, 0.18));
+}
+.equity-line.profit { stroke: #3fb950; }
+.equity-line.loss {
+  stroke: #f85149;
+  filter: drop-shadow(0 0 4px rgba(248, 81, 73, 0.18));
+}
+.equity-hover-band {
+  fill: transparent;
+  stroke: transparent;
+  cursor: crosshair;
+}
+.equity-tooltip {
+  position: absolute;
+  z-index: 5;
+  min-width: 210px;
+  max-width: 230px;
+  padding: 10px 12px;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+  color: #c9d1d9;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  pointer-events: none;
+}
+.equity-tooltip::before {
+  content: "";
+  position: absolute;
+  left: 12px;
+  top: -5px;
+  width: 8px;
+  height: 8px;
+  background: #0d1117;
+  border-left: 1px solid #30363d;
+  border-top: 1px solid #30363d;
+  transform: rotate(45deg);
+}
+.equity-tooltip-time {
+  color: #8b949e;
+  margin-bottom: 4px;
+}
+.equity-tooltip-symbol {
+  color: #58a6ff;
+  margin-top: 4px;
+  word-break: break-all;
+}
+.equity-curve-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: #8b949e;
+  font-size: 0.82rem;
+  margin-top: 8px;
+}
 .exit-filters {
   display: flex;
   gap: 8px;
@@ -67,6 +215,18 @@ header .build {
 .badge.close-trail { background: #d2992233; color: #d29922; border: 1px solid #d29922; }
 .badge.close-other { background: #30363d; color: #8b949e; }
 .ts-cell { font-size: 0.8rem; color: #8b949e; white-space: nowrap; }
+@media (max-width: 700px) {
+  .exit-date-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .exit-date-toolbar select { min-width: 0; width: 100%; }
+  .daily-pnl-row {
+    grid-template-columns: 52px minmax(80px, 1fr) 76px;
+  }
+  .daily-pnl-count { display: none; }
+  .equity-curve { height: 130px; }
+}
 
 .backtest-panel { margin-bottom: 24px; }
 .bt-err-hint { font-size: 0.7rem; color: #f85149; }
@@ -1225,3 +1385,5 @@ button.reset-paper:hover { background: #d2992222; }
 .tv-chart-wrap { width: 100%; }
 tr.clickable-row { cursor: pointer; }
 tr.clickable-row:hover td { background: #1c2128; }
+button.danger { background: #b91c1c; border-color: #b91c1c; color: #fff; }
+button.danger:hover { background: #991b1b; }

@@ -78,6 +78,8 @@ export interface AppConfig {
   margin_mode?: string;
   stop_loss_pct: number;
   take_profit_pct: number;
+  profit_protect_trigger_pct?: number;
+  profit_protect_confirm_sec?: number;
   trailing_stop: boolean;
   allow_short: boolean;
   min_score: number;
@@ -165,6 +167,15 @@ export interface BacktestSlTpTrial {
   sl_hits?: number;
 }
 
+export interface BacktestProfitProtectTrial {
+  trigger_pct_of_tp: number;
+  confirm_sec: number;
+  total_pnl: number;
+  win_rate: number;
+  trades: number;
+  protect_hits?: number;
+}
+
 export interface BacktestRecommendation {
   min_score: number;
   reason: string;
@@ -175,6 +186,10 @@ export interface BacktestRecommendation {
   window_ratio?: number;
   stop_loss_pct?: number;
   take_profit_pct?: number;
+  profit_protect_trigger_pct?: number;
+  profit_protect_confirm_sec?: number;
+  profit_protect_reason?: string;
+  profit_protect_trials?: BacktestProfitProtectTrial[];
   sl_tp_reason?: string;
   sl_tp_trials?: BacktestSlTpTrial[];
 }
@@ -306,6 +321,8 @@ export interface BacktestHistoryEntry {
     window_ratio?: number;
     stop_loss_pct?: number;
     take_profit_pct?: number;
+    profit_protect_trigger_pct?: number;
+    profit_protect_confirm_sec?: number;
   };
   direction?: string;
   window_ratio?: number;
@@ -333,6 +350,8 @@ export interface BacktestBundle {
       min_score: number;
       stop_loss_pct: number;
       take_profit_pct: number;
+      profit_protect_trigger_pct?: number;
+      profit_protect_confirm_sec?: number;
       backtest_auto_settings: boolean;
       backtest_auto_sl_tp: boolean;
     };
@@ -340,6 +359,8 @@ export interface BacktestBundle {
       min_score: number;
       stop_loss_pct: number;
       take_profit_pct: number;
+      profit_protect_trigger_pct?: number;
+      profit_protect_confirm_sec?: number;
     } | null;
   }[];
   auto_run?: boolean;
@@ -349,6 +370,7 @@ export interface BacktestBundle {
 
 export interface StatusData {
   build: string;
+  server_time_kst?: string;
   config: AppConfig;
   bot: {
     status: { running: boolean; phase: string; scan_count: number; message: string };

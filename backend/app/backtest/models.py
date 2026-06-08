@@ -62,6 +62,15 @@ class BacktestSlTpTrial(BaseModel):
     sl_hits: int = 0
 
 
+class BacktestProfitProtectTrial(BaseModel):
+    trigger_pct_of_tp: float
+    confirm_sec: int
+    total_pnl: float
+    win_rate: float
+    trades: int
+    protect_hits: int = 0
+
+
 class BacktestZoneWalkForward(BaseModel):
     symbols: int = 0
     samples: int = 0
@@ -84,6 +93,10 @@ class BacktestRecommendation(BaseModel):
     window_ratio: float = 1.0
     stop_loss_pct: float = 0.0
     take_profit_pct: float = 0.0
+    profit_protect_trigger_pct: float = 3.0
+    profit_protect_confirm_sec: int = 10
+    profit_protect_reason: str = ""
+    profit_protect_trials: list[BacktestProfitProtectTrial] = Field(default_factory=list)
     sl_tp_reason: str = ""
     sl_tp_trials: list[BacktestSlTpTrial] = Field(default_factory=list)
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -37,6 +38,7 @@ from app.backtest.auto_apply import (
 from app.backtest.models import BacktestResult
 from app.backtest.runner import (
     apply_recommendation,
+    cancel_backtest,
     get_history,
     get_latest,
     get_status as backtest_status,
@@ -62,6 +64,11 @@ _ws_clients: set[WebSocket] = set()
 _broadcast_task: asyncio.Task | None = None
 
 api = APIRouter(prefix="/api")
+KST = timezone(timedelta(hours=9), name="KST")
+
+
+def kst_now_iso() -> str:
+    return datetime.now(KST).isoformat()
 
 saved = load_settings()
 if saved:
@@ -75,12 +82,49 @@ if engine.config.paper_initial_balance <= 0:
     engine.config.paper_initial_balance = app_settings.initial_balance
 
 
+async def _status_payload() -> dict:
+    data = await engine.get_status()
+    data["build"] = OAT_BUILD
+    data["server_time_kst"] = kst_now_iso()
+    from app.order_sizing import resolve_order_size_detail
+
+    ps = engine.portfolio.snapshot()
+    size_detail = resolve_order_size_detail(
+        engine.config,
+        ps,
+        open_positions=len(ps.positions),
+    )
+    data["next_order_size_usdt"] = size_detail.notional_usdt
+    data["next_order_size_detail"] = {
+        "notional_usdt": size_detail.notional_usdt,
+        "margin_usdt": size_detail.margin_usdt,
+        "leverage": size_detail.leverage,
+        "summary": size_detail.summary,
+        "steps": size_detail.steps,
+        "slots_remaining": size_detail.slots_remaining,
+        "order_size_basis": size_detail.order_size_basis,
+    }
+    bt = backtest_status()
+    latest = get_latest()
+    data["backtest"] = {
+        "status": bt.model_dump(),
+        "result": latest.model_dump() if latest else None,
+        "history": get_history(50),
+        "symbol_profiles": profiles_for_client(),
+        "auto_run": app_settings.backtest_auto_run,
+        "interval_sec": interval_seconds(engine.config),
+        "interval_minutes": engine.config.backtest_interval_minutes,
+        "live_feedback": pending_feedback_summary(),
+        "auto_apply_history": get_auto_apply_history(10),
+    }
+    return data
+
+
 async def _broadcast_loop() -> None:
     while True:
         if _ws_clients:
             try:
-                data = await engine.get_status()
-                data["build"] = OAT_BUILD
+                data = await _status_payload()
                 dead: set[WebSocket] = set()
                 for ws in _ws_clients:
                     try:
@@ -106,19 +150,21 @@ async def lifespan(app: FastAPI):
         decision = auto_apply_decision(before, updated, result)
         record_auto_apply_decision(decision)
         if updated is None:
-            engine._log("backtest", f"?먮룞 ?ㅼ젙 諛섏쁺 蹂대쪟: {decision['reason']}", "warn")
+            engine._log("backtest", f"자동 설정 반영 보류: {decision['reason']}", "warn")
             return
         if not config_changed(before, updated):
-            engine._log("backtest", "?먮룞 ?ㅼ젙 諛섏쁺 蹂대쪟: 蹂寃??놁쓬")
+            engine._log("backtest", "자동 설정 반영 보류: 변경 없음")
             return
-        engine.apply_config(updated, "諛깊뀒?ㅽ듃 ?먮룞 ?곸슜")
+        engine.apply_config(updated, "백테스트 자동 적용")
         save_settings(engine.config)
         engine._log(
             "backtest",
             (
-                f"?먮룞 ?ㅼ젙 諛섏쁺 ?꾨즺: score {before.min_score:g}->{updated.min_score:g}, "
+                f"자동 설정 반영 완료: score {before.min_score:g}->{updated.min_score:g}, "
                 f"SL {before.stop_loss_pct:g}->{updated.stop_loss_pct:g}, "
-                f"TP {before.take_profit_pct:g}->{updated.take_profit_pct:g}"
+                f"TP {before.take_profit_pct:g}->{updated.take_profit_pct:g}, "
+                f"보호 {before.profit_protect_trigger_pct:g}%->{updated.profit_protect_trigger_pct:g}%, "
+                f"유지 {before.profit_protect_confirm_sec:g}s->{updated.profit_protect_confirm_sec:g}s"
             ),
             "ok",
         )
@@ -153,40 +199,7 @@ async def version():
 
 @api.get("/status")
 async def status():
-    data = await engine.get_status()
-    data["build"] = OAT_BUILD
-    from app.order_sizing import resolve_order_size_detail, resolve_order_size_usdt
-
-    ps = engine.portfolio.snapshot()
-    size_detail = resolve_order_size_detail(
-        engine.config,
-        ps,
-        open_positions=len(ps.positions),
-    )
-    data["next_order_size_usdt"] = size_detail.notional_usdt
-    data["next_order_size_detail"] = {
-        "notional_usdt": size_detail.notional_usdt,
-        "margin_usdt": size_detail.margin_usdt,
-        "leverage": size_detail.leverage,
-        "summary": size_detail.summary,
-        "steps": size_detail.steps,
-        "slots_remaining": size_detail.slots_remaining,
-        "order_size_basis": size_detail.order_size_basis,
-    }
-    bt = backtest_status()
-    latest = get_latest()
-    data["backtest"] = {
-        "status": bt.model_dump(),
-        "result": latest.model_dump() if latest else None,
-        "history": get_history(50),
-        "symbol_profiles": profiles_for_client(),
-        "auto_run": app_settings.backtest_auto_run,
-        "interval_sec": interval_seconds(engine.config),
-        "interval_minutes": engine.config.backtest_interval_minutes,
-        "live_feedback": pending_feedback_summary(),
-        "auto_apply_history": get_auto_apply_history(10),
-    }
-    return data
+    return await _status_payload()
 
 
 @api.post("/config")
@@ -199,7 +212,7 @@ async def update_config(req: ConfigUpdateRequest):
     return {
         "ok": True,
         "config": config_for_client(engine.config),
-        "message": "?ㅼ젙????λ릺?덉뒿?덈떎",
+        "message": "설정이 저장되었습니다",
         "api_keys_configured": bool(
             engine.config.okx_api_key
             and engine.config.okx_api_secret
@@ -365,12 +378,12 @@ async def reset_paper(req: PaperResetRequest = PaperResetRequest()):
         snap = store.paper.snapshot()
         return {
             "ok": True,
-            "message": f"紐⑥쓽?ъ옄 珥덇린???꾨즺 (?붽퀬 ${bal:,.0f})",
+            "message": f"모의투자 초기화 완료 (잔고 ${bal:,.0f})",
             "balance": bal,
             "equity": snap.equity,
         }
     except Exception as e:
-        return {"ok": False, "message": f"珥덇린???ㅽ뙣: {e}"}
+        return {"ok": False, "message": f"초기화 실패: {e}"}
 
 
 @api.post("/portfolio/stats/reset")
@@ -379,7 +392,7 @@ async def reset_portfolio_stats():
         ok, msg = await engine.reset_trade_stats()
         return {"ok": ok, "message": msg}
     except Exception as e:
-        return {"ok": False, "message": f"?듦퀎 珥덇린???ㅽ뙣: {e}"}
+        return {"ok": False, "message": f"통계 초기화 실패: {e}"}
 
 
 @api.post("/test-connection")
@@ -406,7 +419,7 @@ async def set_trade_mode(req: TradeModeRequest):
     cfg = engine.config.model_copy(deep=True)
     cfg.trade_mode = req.mode
     cfg.okx_flag = "1" if req.mode == TradeMode.PAPER else "0"
-    engine.apply_config(cfg, "嫄곕옒 紐⑤뱶")
+    engine.apply_config(cfg, "거래 모드")
     engine.bind_portfolio()
     if req.mode == TradeMode.LIVE:
         await engine._sync_live_if_needed(include_fills=False)
@@ -519,6 +532,12 @@ async def backtest_get_status():
     }
 
 
+@api.post("/backtest/cancel")
+async def backtest_cancel():
+    ok, msg = await cancel_backtest()
+    return {"ok": ok, "message": msg}
+
+
 @api.get("/backtest/latest")
 async def backtest_latest():
     latest = get_latest()
@@ -536,11 +555,11 @@ async def backtest_history(limit: int = 30):
 async def backtest_apply():
     latest = get_latest()
     if not latest:
-        return {"ok": False, "message": "?곸슜??諛깊뀒?ㅽ듃 寃곌낵 ?놁쓬"}
+        return {"ok": False, "message": "적용할 백테스트 결과 없음"}
     updated = build_config_from_backtest(engine.config, latest)
     if updated is None:
         if not latest.recommendation:
-            return {"ok": False, "message": "異붿쿇 ?놁쓬"}
+            return {"ok": False, "message": "추천 없음"}
         updated = engine.config.model_copy(deep=True)
         rec = latest.recommendation
         updated.min_score = float(rec.min_score)
@@ -548,7 +567,10 @@ async def backtest_apply():
             updated.stop_loss_pct = float(rec.stop_loss_pct)
         if rec.take_profit_pct > 0:
             updated.take_profit_pct = float(rec.take_profit_pct)
-    engine.apply_config(updated, "諛깊뀒?ㅽ듃 異붿쿇 ?곸슜")
+        if rec.profit_protect_trigger_pct > 0:
+            updated.profit_protect_trigger_pct = float(rec.profit_protect_trigger_pct)
+            updated.profit_protect_confirm_sec = int(rec.profit_protect_confirm_sec)
+    engine.apply_config(updated, "백테스트 추천 적용")
     save_settings(engine.config)
     rec = latest.recommendation
     msg_parts = [f"min_score={engine.config.min_score}"]
@@ -556,13 +578,19 @@ async def backtest_apply():
         msg_parts.append(f"SL {engine.config.stop_loss_pct}%")
     if rec and rec.take_profit_pct > 0:
         msg_parts.append(f"TP {engine.config.take_profit_pct}%")
-    msg_parts.append(f"二쇰Ц={engine.config.position_size_mode}")
+    if rec and rec.profit_protect_trigger_pct > 0:
+        msg_parts.append(
+            f"보호 {engine.config.profit_protect_trigger_pct}% of TP / {engine.config.profit_protect_confirm_sec}초"
+        )
+    msg_parts.append(f"주문크기={engine.config.position_size_mode}")
     return {
         "ok": True,
         "message": ", ".join(msg_parts),
         "min_score": engine.config.min_score,
         "stop_loss_pct": engine.config.stop_loss_pct,
         "take_profit_pct": engine.config.take_profit_pct,
+        "profit_protect_trigger_pct": engine.config.profit_protect_trigger_pct,
+        "profit_protect_confirm_sec": engine.config.profit_protect_confirm_sec,
         "config": config_for_client(engine.config),
     }
 

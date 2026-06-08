@@ -32,6 +32,7 @@ from app.backtest.models import (
     BacktestDirectionTrial,
     BacktestLogEntry,
     BacktestMetrics,
+    BacktestProfitProtectTrial,
     BacktestRecommendation,
     BacktestResult,
     BacktestScoreTrial,
@@ -41,10 +42,12 @@ from app.backtest.models import (
 
 SCORE_GRID = [45.0, 50.0, 55.0, 60.0, 65.0, 70.0]
 WINDOW_RATIOS = [1.0, 0.75, 0.5]
-SL_GRID = [4.0, 5.0, 6.0, 7.0, 8.0, 10.0]
-TP_GRID = [5.0, 6.0, 7.0, 8.0, 10.0, 12.0, 14.0]
 
-# 전략별 TP 상한: 백테스트 승률이 아무리 높아도 이 이상은 추천하지 않음
+# symbol_sl_tp.py 호환용 — optimize_symbol_sl_tp에서 보조 후보로 사용
+SL_GRID = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0]
+TP_GRID = [1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0, 12.0, 15.0, 18.0]
+
+# TP 전략별 상한 (이 이상이면 백테스트 추천에서 패널티)
 TP_MAX_BY_STRATEGY: dict[StrategyMode, float] = {
     StrategyMode.SCALP: 10.0,
     StrategyMode.SWING: 18.0,
@@ -74,6 +77,8 @@ class _SimPos:
     score: float
     scale_in_count: int = 0
     last_scale_price: float = 0.0
+    profit_protect_armed_at: float = 0.0
+    profit_protect_floor_pct: float = 0.0
 
 
 @dataclass
@@ -208,10 +213,7 @@ def _record_close(
         BacktestLogEntry(
             ts=_utc_now(),
             level="info",
-            message=(
-                f"{inst_id} 청산 {reason} | 투입 ${sim.notional:,.0f} "
-                f"→ 손익 {pnl:+.2f} USDT ({pnl_pct:+.2f}%)"
-            ),
+            message=f"{inst_id} 청산 {reason} | 금액 ${sim.notional:,.0f} 손익 {pnl:+.2f} USDT ({pnl_pct:+.2f}%)",
         )
     )
 
@@ -260,7 +262,7 @@ def _portfolio_snap(state: _SimState) -> PortfolioSnapshot:
     )
 
 
-def _to_position(sim: _SimPos, price: float, config: AppConfig) -> Position:
+def _to_position(sim: _SimPos, price: float, config: AppConfig, bar_i: int = 0) -> Position:
     cost = sim.entry_price * sim.quantity if sim.quantity else sim.notional
     if sim.side == PositionSide.LONG:
         upnl = (price - sim.entry_price) * sim.quantity
@@ -269,7 +271,7 @@ def _to_position(sim: _SimPos, price: float, config: AppConfig) -> Position:
     margin = cost / max(1, config.leverage) if config.instrument_type != InstrumentType.SPOT else cost
     upnl_pct = upnl / margin * 100 if margin > 0 else 0
     return Position(
-        id="bt",
+        id=f"bt:{bar_i}",
         inst_id=sim.inst_id,
         side=sim.side,
         quantity=sim.quantity,
@@ -282,6 +284,8 @@ def _to_position(sim: _SimPos, price: float, config: AppConfig) -> Position:
         strategy_mode=sim.strategy,
         instrument_type=config.instrument_type,
         trailing_high=sim.trailing_high,
+        profit_protect_armed_at=sim.profit_protect_armed_at,
+        profit_protect_floor_pct=sim.profit_protect_floor_pct,
         notional_usdt=sim.notional,
         scale_in_count=sim.scale_in_count,
         last_scale_price=sim.last_scale_price or sim.entry_price,
@@ -345,7 +349,7 @@ def _trend_break_signal_bt(
         or (candle_break and vol_ratio >= 1.1)
     )
     if pos.unrealized_pnl > 0 and reversal_ok:
-        return True, f"추세 이탈 ({confirm_bars}캔들 확인)"
+        return True, f"추세 반전 ({confirm_bars}봉 확인)"
     return False, ""
 
 
@@ -380,17 +384,17 @@ def _advanced_exit_signal_bt(
     current = float(closes[-1])
 
     if sim.side == PositionSide.LONG and st_dir == -1 and current < st_line:
-        return True, f"Supertrend 하락 전환 (ADX {adx_val:.0f})"
+        return True, f"Supertrend 하향 전환 (ADX {adx_val:.0f})"
     if sim.side == PositionSide.SHORT and st_dir == 1 and current > st_line:
-        return True, f"Supertrend 상승 전환 (ADX {adx_val:.0f})"
+        return True, f"Supertrend 상향 전환 (ADX {adx_val:.0f})"
     if pos.unrealized_pnl <= 0:
         return False, ""
     if sim.side == PositionSide.LONG and stoch_k < stoch_d and stoch_k >= 70:
-        return True, f"이익 보호: Stoch 과열 둔화 {stoch_k:.0f}"
+        return True, f"익절 신호: Stoch 과매수 하락 {stoch_k:.0f}"
     if sim.side == PositionSide.SHORT and stoch_k > stoch_d and stoch_k <= 30:
-        return True, f"이익 보호: Stoch 과매도 반등 {stoch_k:.0f}"
+        return True, f"익절 신호: Stoch 과매도 반등 {stoch_k:.0f}"
     if adx_val < 18 and vol_ratio < 0.8:
-        return True, f"이익 보호: ADX/거래량 약화 ({adx_val:.0f}, {vol_ratio:.1f}배)"
+        return True, f"익절 신호: ADX/거래량 약화 ({adx_val:.0f}, {vol_ratio:.1f}배)"
     return False, ""
 
 
@@ -434,7 +438,7 @@ def _trend_scale_signal_bt(
         candle_ok = closes[-1] < opens[-1] and closes[-1] <= lows[-1] + candle_range * 0.25
         spacing_ok = closes[-1] <= last_scale * 0.996
     ok = trend_ok and macd_ok and candle_ok and strong_body and vol_ratio >= 1.5 and spacing_ok
-    return ok, f"추가진입 조건 (거래량 {vol_ratio:.1f}배)"
+    return ok, f"추세추종 추가진입 (거래량 {vol_ratio:.1f}배)"
 
 
 def simulate_symbol(
@@ -469,15 +473,19 @@ def simulate_symbol(
             if iid != inst_id:
                 continue
             sim = state.positions[iid]
-            pos = _to_position(sim, price, cfg)
+            pos = _to_position(sim, price, cfg, i)
+            exit_flag, reason = should_exit(pos, cfg)
+            sim.profit_protect_armed_at = pos.profit_protect_armed_at
+            sim.profit_protect_floor_pct = pos.profit_protect_floor_pct
+            if exit_flag:
+                _record_close(sim, inst_id, price, i, state, logs, reason, cfg.leverage)
+                del state.positions[iid]
+                continue
+            if pos.unrealized_pnl > 0:
+                continue
             trend_exit, trend_reason = _trend_break_signal_bt(sim, candles, i, cfg)
             if trend_exit:
                 _record_close(sim, inst_id, price, i, state, logs, trend_reason, cfg.leverage)
-                del state.positions[iid]
-                continue
-            exit_flag, reason = should_exit(pos, cfg)
-            if exit_flag:
-                _record_close(sim, inst_id, price, i, state, logs, reason, cfg.leverage)
                 del state.positions[iid]
                 continue
             advanced_exit, advanced_reason = _advanced_exit_signal_bt(sim, candles, i, cfg)
@@ -507,22 +515,12 @@ def simulate_symbol(
                         sim.scale_in_count += 1
                         sim.last_scale_price = price
                         sim.stop_loss, sim.take_profit = _sl_tp_prices(
-                            sim.entry_price,
-                            sim.side,
-                            sim.sl_pct,
-                            sim.tp_pct,
-                            cfg.leverage,
+                            sim.entry_price, sim.side, sim.sl_pct, sim.tp_pct, cfg.leverage,
                         )
-                        logs.append(
-                            BacktestLogEntry(
-                                ts=_utc_now(),
-                                level="info",
-                                message=(
-                                    f"{inst_id} 백테스트 추가진입 #{sim.scale_in_count} "
-                                    f"bar={i} 명목 ${add_notional:,.0f} · {scale_reason}"
-                                ),
-                            )
-                        )
+                        logs.append(BacktestLogEntry(
+                            ts=_utc_now(), level="info",
+                            message=f"{inst_id} 추가진입 #{sim.scale_in_count} bar={i} ${add_notional:,.0f} · {scale_reason}",
+                        ))
             continue
 
         if len(state.positions) >= cfg.max_positions:
@@ -531,11 +529,7 @@ def simulate_symbol(
         for strat in strat_list:
             cand = _build_candidate(inst_id, highs, lows, closes, volumes, i, strat)
             three_pattern = backtest_three_soldiers_signal(
-                candles,
-                i,
-                base_interval,
-                cfg.leverage,
-                cfg.instrument_type,
+                candles, i, base_interval, cfg.leverage, cfg.instrument_type,
             )
             if three_pattern:
                 cand.score = round(cand.score + three_pattern.score_bonus, 1)
@@ -575,33 +569,21 @@ def simulate_symbol(
             lev = max(1, cfg.leverage)
             margin = notional / lev
             state.positions[inst_id] = _SimPos(
-                inst_id=inst_id,
-                side=side,
-                strategy=strat,
-                entry_bar=i,
-                entry_price=price,
+                inst_id=inst_id, side=side, strategy=strat,
+                entry_bar=i, entry_price=price,
                 quantity=notional / price if price > 0 else 0,
-                notional=notional,
-                stop_loss=sl,
-                take_profit=tp,
-                sl_pct=sl_pct,
-                tp_pct=tp_pct,
-                trailing_high=price,
-                score=cand.score,
-                last_scale_price=price,
+                notional=notional, stop_loss=sl, take_profit=tp,
+                sl_pct=sl_pct, tp_pct=tp_pct, trailing_high=price,
+                score=cand.score, last_scale_price=price,
             )
-            logs.append(
-                BacktestLogEntry(
-                    ts=_utc_now(),
-                    level="info",
-                    message=(
-                        f"{inst_id} 진입 {side.value} bar={i} score={cand.score:.0f} "
-                        f"명목 ${notional:,.0f} · 증거금 ${margin:,.0f} ({lev}x) "
-                        f"SL{sl_pct}% TP{tp_pct}%"
-                        + (f" · {three_pattern.reason}" if three_pattern and side == three_pattern.side else "")
-                    ),
-                )
-            )
+            logs.append(BacktestLogEntry(
+                ts=_utc_now(), level="info",
+                message=(
+                    f"{inst_id} 진입 {side.value} bar={i} score={cand.score:.0f} "
+                    f"${notional:,.0f} · 증거금 ${margin:,.0f} ({lev}x) SL{sl_pct}% TP{tp_pct}%"
+                    + (f" · {three_pattern.reason}" if three_pattern and side == three_pattern.side else "")
+                ),
+            ))
             break
 
         state.equity_curve.append(state.equity)
@@ -623,21 +605,13 @@ def run_simulation(
         iid: _slice_candles(c, window_ratio) for iid, c in symbol_candles.items()
     }
     for inst_id, candles in sliced.items():
-        logs.append(
-            BacktestLogEntry(
-                ts=_utc_now(),
-                level="info",
-                message=f"--- {inst_id} 시뮬레이션 (봉 {len(candles)}, {'역방향' if invert_signals else '정방향'}) ---",
-            )
-        )
+        direction_label = "역방향" if invert_signals else "정방향"
+        logs.append(BacktestLogEntry(
+            ts=_utc_now(), level="info",
+            message=f"--- {inst_id} 시뮬레이션 (캔들 {len(candles)}, {direction_label}) ---",
+        ))
         total_bars += simulate_symbol(
-            inst_id,
-            candles,
-            config,
-            state,
-            logs,
-            min_score_override,
-            invert_signals=invert_signals,
+            inst_id, candles, config, state, logs, min_score_override, invert_signals=invert_signals,
         )
 
     _close_open_positions(sliced, state, logs, config.leverage)
@@ -704,44 +678,8 @@ def _sl_tp_rank(
     tp_pct: float,
     strategy: StrategyMode,
 ) -> float:
-    """
-    승률 우선으로 랭킹을 매기되, TP가 전략 상한을 넘으면 페널티를 적용한다.
-    - 승률이 높아도 TP를 무조건 높이는 방향을 막기 위해
-      전략별 TP 상한(TP_MAX_BY_STRATEGY) 초과 시 페널티 부여
-    - 적정 TP 범위 안에서 승률+PnL+tp_hits를 최대화하는 조합 선택
-    """
     if trades < 2:
         return -1e9
-
-    tp_max = TP_MAX_BY_STRATEGY.get(strategy, 14.0)
-
-    # TP 상한 초과 시 페널티 (초과량에 비례)
-    tp_penalty = 0.0
-    if tp_pct > tp_max:
-        tp_penalty = (tp_pct - tp_max) * 5.0  # 1%당 5점 페널티
-
-    # 승률이 60% 이상일 때는 TP를 낮추는 방향을 선호 (빠른 익절이 더 유리)
-    tp_size_penalty = 0.0
-    if win_rate >= 60 and tp_pct > tp_max * 0.75:
-        tp_size_penalty = (tp_pct - tp_max * 0.75) * 2.0
-
-    tp_bonus = min(tp_hits, trades) * 0.4
-    base = win_rate * 3.5 + min(trades, 30) * 0.2 + pnl * 0.08 + tp_bonus
-    return base - tp_penalty - tp_size_penalty
-
-
-def _sl_tp_rank(
-    win_rate: float,
-    pnl: float,
-    trades: int,
-    tp_hits: int,
-    tp_pct: float,
-    strategy: StrategyMode,
-) -> float:
-    """Rank SL/TP by expectancy, TP hit rate, and enough trade samples."""
-    if trades < 2:
-        return -1e9
-
     tp_max = TP_MAX_BY_STRATEGY.get(strategy, 14.0)
     tp_rate = tp_hits / trades if trades > 0 else 0.0
     unresolved = max(0, trades - tp_hits)
@@ -750,8 +688,6 @@ def _sl_tp_rank(
     tp_penalty = 0.0
     if tp_pct > tp_max:
         tp_penalty += (tp_pct - tp_max) * 10.0
-    if strategy == StrategyMode.SCALP and tp_pct > 8.0:
-        tp_penalty += (tp_pct - 8.0) * 2.5
 
     sparse_penalty = max(0, 6 - trades) * 8.0
     low_tp_hit_penalty = max(0.0, 0.28 - tp_rate) * 45.0
@@ -771,6 +707,10 @@ def _count_exit_types(trades: list[BacktestTrade]) -> tuple[int, int]:
     return sl_hits, tp_hits
 
 
+def _count_profit_protect_hits(trades: list[BacktestTrade]) -> int:
+    return sum(1 for t in trades if "수익 보호" in t.exit_reason or "이익 보호" in t.exit_reason)
+
+
 def optimize_sl_tp(
     config: AppConfig,
     symbol_candles: dict[str, list[list]],
@@ -779,51 +719,52 @@ def optimize_sl_tp(
     invert_signals: bool,
     window_ratio: float,
 ) -> tuple[float, float, list[BacktestSlTpTrial], str]:
-    trials: list[BacktestSlTpTrial] = []
-    best_rank = float("-inf")
-    best_sl = config.stop_loss_pct or 2.0
-    best_tp = config.take_profit_pct or 3.0
-    base_sl = best_sl
-    base_tp = best_tp
-
-    # 전략별 TP 상한 적용
+    base_sl = float(config.stop_loss_pct) if config.stop_loss_pct else 3.0
+    base_tp = float(config.take_profit_pct) if config.take_profit_pct else 5.0
     strategy = config.strategy_mode
     tp_max = TP_MAX_BY_STRATEGY.get(strategy, 14.0)
 
-    sl_candidates = sorted(set(SL_GRID + [round(base_sl * 0.75, 2), round(base_sl, 2), round(base_sl * 1.25, 2)]))
-    # TP 후보를 전략 상한으로 제한
-    tp_candidates = sorted(set(
-        [t for t in TP_GRID if t <= tp_max]
-        + [round(base_tp * 0.75, 2), round(min(base_tp, tp_max), 2), round(min(base_tp * 1.25, tp_max), 2)]
+    sl_candidates = sorted(set([
+        round(max(0.5, base_sl * 0.5), 2),
+        round(max(0.5, base_sl * 0.7), 2),
+        round(max(0.5, base_sl * 0.85), 2),
+        round(max(0.5, base_sl), 2),
+        round(max(0.5, base_sl * 1.2), 2),
+        round(max(0.5, base_sl * 1.5), 2),
+        round(max(0.5, base_sl * 2.0), 2),
+    ]))
+
+    tp_candidates = sorted(set([
+        round(min(tp_max, max(base_tp * 0.6, base_sl * 1.1)), 2),
+        round(min(tp_max, max(base_tp * 0.8, base_sl * 1.1)), 2),
+        round(min(tp_max, max(base_tp, base_sl * 1.1)), 2),
+        round(min(tp_max, max(base_tp * 1.2, base_sl * 1.1)), 2),
+        round(min(tp_max, max(base_tp * 1.5, base_sl * 1.1)), 2),
+        round(min(tp_max, max(base_tp * 2.0, base_sl * 1.1)), 2),
+    ]))
+
+    logs.append(BacktestLogEntry(
+        ts=_utc_now(), level="info",
+        message=(
+            f"SL/TP 탐색 (설정값 기준: SL {base_sl}% / TP {base_tp}%, TP상한 {tp_max}%) "
+            f"score={min_score} SL후보 {len(sl_candidates)}개 TP {len(tp_candidates)}개"
+        ),
     ))
 
-    logs.append(
-        BacktestLogEntry(
-            ts=_utc_now(),
-            level="info",
-            message=(
-                f"SL/TP 탐색 (승률 우선, TP상한 {tp_max}%) — "
-                f"score={min_score} SL 후보 {len(sl_candidates)} × TP {len(tp_candidates)}"
-            ),
-        )
-    )
+    trials: list[BacktestSlTpTrial] = []
+    best_rank = float("-inf")
+    best_sl = base_sl
+    best_tp = base_tp
 
     for sl in sl_candidates:
         for tp in tp_candidates:
-            # SL 대비 최소 1.5배 이상 TP (기존 2.0배에서 완화 — 단타는 1.5배도 충분)
-            min_ratio = 1.15 if strategy == StrategyMode.SCALP else 1.5
-            max_ratio = 1.8 if strategy == StrategyMode.SCALP else 2.4
-            if tp < sl * min_ratio:
-                continue
-            if tp > sl * max_ratio:
+            if tp < sl * 1.1:
                 continue
             cfg = config.model_copy(deep=True)
             cfg.stop_loss_pct = sl
             cfg.take_profit_pct = tp
             state, _ = run_simulation(
-                cfg,
-                symbol_candles,
-                [],
+                cfg, symbol_candles, [],
                 min_score_override=min_score,
                 invert_signals=invert_signals,
                 window_ratio=window_ratio,
@@ -833,13 +774,9 @@ def optimize_sl_tp(
             wr = wins / len(state.trades) * 100 if state.trades else 0.0
             sl_h, tp_h = _count_exit_types(state.trades)
             trial = BacktestSlTpTrial(
-                stop_loss_pct=sl,
-                take_profit_pct=tp,
-                total_pnl=round(pnl, 2),
-                win_rate=round(wr, 1),
-                trades=len(state.trades),
-                tp_hits=tp_h,
-                sl_hits=sl_h,
+                stop_loss_pct=sl, take_profit_pct=tp,
+                total_pnl=round(pnl, 2), win_rate=round(wr, 1),
+                trades=len(state.trades), tp_hits=tp_h, sl_hits=sl_h,
             )
             trials.append(trial)
             rank = _sl_tp_rank(wr, pnl, len(state.trades), tp_h, tp, strategy)
@@ -847,30 +784,118 @@ def optimize_sl_tp(
                 best_rank = rank
                 best_sl, best_tp = sl, tp
 
-    reason = (
-        f"승률 우선 SL {best_sl}% / TP {best_tp}% "
-        f"(TP상한 {tp_max}%, 후보 {len(trials)}개, score={min_score})"
-    )
-    reason = (
-        f"기대값/TP도달률 우선 SL {best_sl}% / TP {best_tp}% "
-        f"(TP상한 {tp_max}%, 후보 {len(trials)}개, score={min_score})"
-    )
     top = sorted(
         trials,
         key=lambda t: _sl_tp_rank(t.win_rate, t.total_pnl, t.trades, t.tp_hits, t.take_profit_pct, strategy),
         reverse=True,
     )
+    reason = (
+        f"설정값 기반 SL/TP 최적화: SL {best_sl}% / TP {best_tp}% "
+        f"(기준 SL {base_sl}% TP {base_tp}%, TP상한 {tp_max}%, 후보 {len(trials)}개, score={min_score})"
+    )
     if top:
         t0 = top[0]
-        reason += f" — 최고 승률 {t0.win_rate}% PnL {t0.total_pnl:+.2f} ({t0.trades}건)"
-    if top:
-        t0 = top[0]
-        reason = (
-            f"SL/TP rank by expectancy and TP-hit: SL {best_sl}% / TP {best_tp}% "
-            f"(cap {tp_max}%, candidates {len(trials)}, score={min_score}) — "
-            f"top win {t0.win_rate}% PnL {t0.total_pnl:+.2f} TP hits {t0.tp_hits}/{t0.trades}"
-        )
+        reason += f" — 최고 승률 {t0.win_rate}% PnL {t0.total_pnl:+.2f} TP {t0.tp_hits}/{t0.trades}건"
     return best_sl, best_tp, trials, reason
+
+
+def _profit_protect_rank(win_rate: float, pnl: float, trades: int, protect_hits: int) -> float:
+    if trades <= 0:
+        return float("-inf")
+    protect_rate = protect_hits / trades
+    sparse_penalty = max(0, 6 - trades) * 6.0
+    over_protect_penalty = max(0.0, protect_rate - 0.45) * 20.0
+    return pnl * 1.2 + win_rate * 0.16 + min(trades, 45) * 0.35 + protect_hits * 0.3 - sparse_penalty - over_protect_penalty
+
+
+def optimize_profit_protection(
+    config: AppConfig,
+    symbol_candles: dict[str, list[list]],
+    logs: list[BacktestLogEntry],
+    min_score: float,
+    invert_signals: bool,
+    window_ratio: float,
+) -> tuple[float, int, list[BacktestProfitProtectTrial], str]:
+    user_trigger = float(config.profit_protect_trigger_pct) if config.profit_protect_trigger_pct else 3.0
+    user_confirm = int(config.profit_protect_confirm_sec) if config.profit_protect_confirm_sec else 10
+
+    trigger_candidates = sorted(set([
+        round(max(0.5, user_trigger * 0.5), 2),
+        round(max(0.5, user_trigger * 0.75), 2),
+        round(max(0.5, user_trigger), 2),
+        round(max(0.5, user_trigger * 1.5), 2),
+        round(max(0.5, user_trigger * 2.0), 2),
+        1.0, 3.0, 5.0, 8.0, 10.0,
+    ]))
+    confirm_candidates = sorted(set([
+        max(5, user_confirm - 10),
+        user_confirm,
+        user_confirm + 10,
+        user_confirm + 20,
+        5, 10, 20, 30,
+    ]))
+    confirm_candidates = sorted(set(c for c in confirm_candidates if c >= 5))
+
+    trials: list[BacktestProfitProtectTrial] = []
+    # ★ best_rank를 -inf 대신 실제 탐색 결과가 없을 때 설정값을 유지하도록
+    #    trades>0인 trial이 하나라도 있어야 best를 갱신
+    best_rank = float("-inf")
+    best_trigger = user_trigger
+    best_confirm = user_confirm
+    found_valid = False  # trades>0인 결과가 하나라도 있는지 추적
+
+    logs.append(BacktestLogEntry(
+        ts=_utc_now(), level="info",
+        message=f"보호 익절 탐색: TP기준 {trigger_candidates}%, 유지 {confirm_candidates}초",
+    ))
+
+    for trigger in trigger_candidates:
+        for confirm in confirm_candidates:
+            cfg = config.model_copy(deep=True)
+            cfg.profit_protect_trigger_pct = trigger
+            cfg.profit_protect_confirm_sec = confirm
+            state, _ = run_simulation(
+                cfg, symbol_candles, [],
+                min_score_override=min_score,
+                invert_signals=invert_signals,
+                window_ratio=window_ratio,
+            )
+            pnl = sum(t.pnl_usdt for t in state.trades)
+            wins = sum(1 for t in state.trades if t.pnl_usdt > 0)
+            wr = wins / len(state.trades) * 100 if state.trades else 0.0
+            protect_hits = _count_profit_protect_hits(state.trades)
+            trial = BacktestProfitProtectTrial(
+                trigger_pct_of_tp=trigger, confirm_sec=confirm,
+                total_pnl=round(pnl, 2), win_rate=round(wr, 1),
+                trades=len(state.trades), protect_hits=protect_hits,
+            )
+            trials.append(trial)
+            # ★ trades=0이면 rank=-inf이므로 best 갱신 안 됨 — 설정값 유지
+            if len(state.trades) > 0:
+                rank = _profit_protect_rank(wr, pnl, len(state.trades), protect_hits)
+                if rank > best_rank:
+                    best_rank = rank
+                    best_trigger = trigger
+                    best_confirm = confirm
+                    found_valid = True
+
+    # ★ 유효한 탐색 결과가 없으면 설정값 그대로 반환 (0으로 떨어지지 않음)
+    if not found_valid:
+        logs.append(BacktestLogEntry(
+            ts=_utc_now(), level="warn",
+            message=f"보호 익절 탐색: 거래 없음 — 설정값 유지 ({user_trigger}% / {user_confirm}초)",
+        ))
+
+    top = sorted(
+        trials,
+        key=lambda t: _profit_protect_rank(t.win_rate, t.total_pnl, t.trades, t.protect_hits),
+        reverse=True,
+    )
+    reason = f"보호 익절: TP기준 {best_trigger}% / 유지 {best_confirm}초"
+    if top and top[0].trades > 0:
+        t0 = top[0]
+        reason += f" — top PnL {t0.total_pnl:+.2f} 승률 {t0.win_rate}% 보호청산 {t0.protect_hits}/{t0.trades}"
+    return best_trigger, best_confirm, top[:20], reason
 
 
 def optimize_strategy(
@@ -883,13 +908,10 @@ def optimize_strategy(
     best_rank = float("-inf")
     best: BacktestDirectionTrial | None = None
 
-    logs.append(
-        BacktestLogEntry(
-            ts=_utc_now(),
-            level="info",
-            message="전략 탐색: 정방향/역방향 × 구간(100/75/50%) × min_score",
-        )
-    )
+    logs.append(BacktestLogEntry(
+        ts=_utc_now(), level="info",
+        message="방향 탐색: 정방향/역방향 4가지 × 윈도우(100/75/50%) × min_score",
+    ))
 
     mode_settings = (
         ("normal", False, config.position_side),
@@ -904,12 +926,8 @@ def optimize_strategy(
                 trial_cfg = config.model_copy(deep=True)
                 trial_cfg.position_side = side_mode
                 state, _ = run_simulation(
-                    trial_cfg,
-                    symbol_candles,
-                    trial_logs,
-                    min_score_override=ms,
-                    invert_signals=invert,
-                    window_ratio=wratio,
+                    trial_cfg, symbol_candles, trial_logs,
+                    min_score_override=ms, invert_signals=invert, window_ratio=wratio,
                 )
                 pnl = sum(t.pnl_usdt for t in state.trades)
                 wins = sum(1 for t in state.trades if t.pnl_usdt > 0)
@@ -917,14 +935,9 @@ def optimize_strategy(
                 long_n = sum(1 for t in state.trades if t.side == "long")
                 short_n = sum(1 for t in state.trades if t.side == "short")
                 dt = BacktestDirectionTrial(
-                    mode=mode,
-                    window_ratio=wratio,
-                    min_score=ms,
-                    total_pnl=round(pnl, 2),
-                    win_rate=round(win_r, 1),
-                    trades=len(state.trades),
-                    long_trades=long_n,
-                    short_trades=short_n,
+                    mode=mode, window_ratio=wratio, min_score=ms,
+                    total_pnl=round(pnl, 2), win_rate=round(win_r, 1),
+                    trades=len(state.trades), long_trades=long_n, short_trades=short_n,
                 )
                 direction_trials.append(dt)
                 rank = _trial_rank(pnl, win_r, len(state.trades))
@@ -934,71 +947,56 @@ def optimize_strategy(
 
     if best is None:
         best = BacktestDirectionTrial(
-            mode="normal",
-            window_ratio=1.0,
-            min_score=config.min_score,
-            total_pnl=0,
-            win_rate=0,
-            trades=0,
+            mode="normal", window_ratio=1.0, min_score=config.min_score,
+            total_pnl=0, win_rate=0, trades=0,
         )
 
     for ms in SCORE_GRID:
         st_logs: list[BacktestLogEntry] = []
         best_cfg = _config_for_direction(config, best.mode)
         st, _ = run_simulation(
-            best_cfg,
-            symbol_candles,
-            st_logs,
-            min_score_override=ms,
-            invert_signals=best.mode == "inverse",
-            window_ratio=best.window_ratio,
+            best_cfg, symbol_candles, st_logs,
+            min_score_override=ms, invert_signals=best.mode == "inverse", window_ratio=best.window_ratio,
         )
         pnl = sum(t.pnl_usdt for t in st.trades)
         wins = sum(1 for t in st.trades if t.pnl_usdt > 0)
         wr = wins / len(st.trades) * 100 if st.trades else 0
-        score_trials.append(
-            BacktestScoreTrial(
-                min_score=ms,
-                total_pnl=round(pnl, 2),
-                win_rate=round(wr, 1),
-                trades=len(st.trades),
-                long_entries=sum(1 for t in st.trades if t.side == "long"),
-                short_entries=sum(1 for t in st.trades if t.side == "short"),
-            )
-        )
+        score_trials.append(BacktestScoreTrial(
+            min_score=ms, total_pnl=round(pnl, 2), win_rate=round(wr, 1),
+            trades=len(st.trades),
+            long_entries=sum(1 for t in st.trades if t.side == "long"),
+            short_entries=sum(1 for t in st.trades if t.side == "short"),
+        ))
 
     long_best = max(
         (t for t in direction_trials if t.mode in ("normal", "long_only") and (t.long_trades or 0) > 0),
-        key=lambda t: _trial_rank(t.total_pnl, t.win_rate, t.trades),
-        default=None,
+        key=lambda t: _trial_rank(t.total_pnl, t.win_rate, t.trades), default=None,
     )
     short_best = max(
         (t for t in direction_trials if t.mode in ("short_only", "inverse") and (t.short_trades or 0) > 0),
-        key=lambda t: _trial_rank(t.total_pnl, t.win_rate, t.trades),
-        default=None,
+        key=lambda t: _trial_rank(t.total_pnl, t.win_rate, t.trades), default=None,
     )
 
     dir_reason = (
-        f"최적 {best.mode} 구간 {int(best.window_ratio * 100)}% "
+        f"최적 {best.mode} 윈도우 {int(best.window_ratio * 100)}% "
         f"min_score={best.min_score} PnL {best.total_pnl:+.2f} 승률 {best.win_rate}%"
     )
-    if (
-        long_best
-        and short_best
-        and long_best.win_rate < 45
-        and short_best.win_rate >= long_best.win_rate + 8
-    ):
-        dir_reason += (
-            f" | 롱 승률 {long_best.win_rate}% 낮음 -> 숏/반전 {short_best.win_rate}% 우세"
-        )
+    if long_best and short_best and long_best.win_rate < 45 and short_best.win_rate >= long_best.win_rate + 8:
+        dir_reason += f" | 롱 승률 {long_best.win_rate}% 낮음 → 숏 전환 {short_best.win_rate}% 권장"
 
     rec_sl, rec_tp, sl_tp_trials, sl_tp_reason = optimize_sl_tp(
         _config_for_direction(config, best.mode),
-        symbol_candles,
-        logs,
-        best.min_score,
-        best.mode == "inverse",
-        best.window_ratio,
+        symbol_candles, logs, best.min_score, best.mode == "inverse", best.window_ratio,
+    )
+
+    protect_cfg = _config_for_direction(config, best.mode)
+    protect_cfg.stop_loss_pct = rec_sl
+    protect_cfg.take_profit_pct = rec_tp
+    protect_cfg.profit_protect_trigger_pct = config.profit_protect_trigger_pct
+    protect_cfg.profit_protect_confirm_sec = config.profit_protect_confirm_sec
+
+    rec_protect_trigger, rec_protect_confirm, protect_trials, protect_reason = optimize_profit_protection(
+        protect_cfg, symbol_candles, logs, best.min_score, best.mode == "inverse", best.window_ratio,
     )
 
     return BacktestRecommendation(
@@ -1011,6 +1009,10 @@ def optimize_strategy(
         window_ratio=best.window_ratio,
         stop_loss_pct=rec_sl,
         take_profit_pct=rec_tp,
+        profit_protect_trigger_pct=rec_protect_trigger,
+        profit_protect_confirm_sec=rec_protect_confirm,
+        profit_protect_reason=protect_reason,
+        profit_protect_trials=protect_trials,
         sl_tp_reason=sl_tp_reason,
         sl_tp_trials=sl_tp_trials,
     )
@@ -1027,28 +1029,21 @@ def build_result(
     started = _utc_now()
     start_equity = config.paper_initial_balance or settings.initial_balance
 
-    logs.insert(
-        0,
-        BacktestLogEntry(
-            ts=started,
-            level="info",
-            message=f"백테스트 시작 id={rid} 종목 {len(symbols)}개",
-        ),
-    )
+    logs.insert(0, BacktestLogEntry(
+        ts=started, level="info",
+        message=f"백테스트 시작 id={rid} 종목 {len(symbols)}개 · SL {config.stop_loss_pct}% TP {config.take_profit_pct}% 보호 {config.profit_protect_trigger_pct}%/{config.profit_protect_confirm_sec}초",
+    ))
 
     recommendation = None
     if optimize:
         recommendation = optimize_strategy(config, symbol_candles, logs)
-        logs.append(
-            BacktestLogEntry(
-                ts=_utc_now(),
-                level="ok",
-                message=(
-                    f"추천 {recommendation.direction} / min_score={recommendation.min_score} "
-                    f"/ 구간 {int(recommendation.window_ratio * 100)}% — {recommendation.reason}"
-                ),
-            )
-        )
+        logs.append(BacktestLogEntry(
+            ts=_utc_now(), level="ok",
+            message=(
+                f"추천 {recommendation.direction} / min_score={recommendation.min_score} "
+                f"/ 윈도우 {int(recommendation.window_ratio * 100)}% — {recommendation.reason}"
+            ),
+        ))
 
     invert_run = recommendation.direction == "inverse" if recommendation else False
     window_run = recommendation.window_ratio if recommendation else 1.0
@@ -1061,40 +1056,36 @@ def build_result(
         run_cfg.stop_loss_pct = recommendation.stop_loss_pct
         run_cfg.take_profit_pct = recommendation.take_profit_pct
 
+    # ★ 보호 익절: 추천값이 유효하면 적용, 아니면 원래 설정값 유지 (0으로 덮어쓰지 않음)
+    if recommendation and recommendation.profit_protect_trigger_pct > 0:
+        run_cfg.profit_protect_trigger_pct = recommendation.profit_protect_trigger_pct
+        run_cfg.profit_protect_confirm_sec = recommendation.profit_protect_confirm_sec
+    else:
+        # 추천값이 0이거나 없으면 원래 config 설정값 그대로 유지
+        run_cfg.profit_protect_trigger_pct = config.profit_protect_trigger_pct
+        run_cfg.profit_protect_confirm_sec = config.profit_protect_confirm_sec
+
     state, bars = run_simulation(
-        run_cfg,
-        symbol_candles,
-        logs,
-        min_score_override=min_run,
-        invert_signals=invert_run,
-        window_ratio=window_run,
+        run_cfg, symbol_candles, logs,
+        min_score_override=min_run, invert_signals=invert_run, window_ratio=window_run,
     )
     initial_snap = PortfolioSnapshot(
-        balance=start_equity,
-        equity=start_equity,
-        available=start_equity,
-        unrealized_pnl=0,
-        realized_pnl=0,
-        positions=[],
-        trade_count=0,
-        win_rate=0,
+        balance=start_equity, equity=start_equity, available=start_equity,
+        unrealized_pnl=0, realized_pnl=0, positions=[], trade_count=0, win_rate=0,
     )
     order_notional = resolve_order_size_usdt(run_cfg, initial_snap, open_positions=0)
     metrics = _metrics_from_state(state, bars, start_equity, order_notional)
 
     finished = _utc_now()
-    logs.append(
-        BacktestLogEntry(
-            ts=finished,
-            level="ok",
-            message=(
-                f"완료 시작 ${metrics.start_equity:,.0f} → 최종 ${metrics.end_equity:,.0f} "
-                f"(손익 {metrics.total_pnl:+.2f} USDT, {metrics.total_pnl_pct:+.2f}%) "
-                f"1회 명목 ${metrics.order_notional_usdt:,.0f} · "
-                f"거래 {metrics.trade_count}건 승률 {metrics.win_rate}%"
-            ),
-        )
-    )
+    logs.append(BacktestLogEntry(
+        ts=finished, level="ok",
+        message=(
+            f"완료 시작 ${metrics.start_equity:,.0f} → 최종 ${metrics.end_equity:,.0f} "
+            f"(손익 {metrics.total_pnl:+.2f} USDT, {metrics.total_pnl_pct:+.2f}%) "
+            f"1건 금액 ${metrics.order_notional_usdt:,.0f} · "
+            f"거래 {metrics.trade_count}건 승률 {metrics.win_rate}%"
+        ),
+    ))
 
     candle_bars = max((len(c) for c in symbol_candles.values()), default=0)
     strat_list = active_strategies(config)
@@ -1106,47 +1097,31 @@ def build_result(
         interval = "5m"
     charts = build_symbol_charts(symbol_candles, state.trades)
     zone_walkforward = evaluate_zone_walkforward(symbol_candles)
-    logs.append(
-        BacktestLogEntry(
-            ts=_utc_now(),
-            level="info",
-            message=(
-                f"구간 워크포워드: {zone_walkforward.samples}개 예측, "
-                f"정확도 {zone_walkforward.accuracy_pct}% "
-                f"(롱 {zone_walkforward.long_accuracy_pct}% / 숏 {zone_walkforward.short_accuracy_pct}%), "
-                f"평균 {zone_walkforward.avg_forward_r}R, 실패돌파 {zone_walkforward.false_break_pct}%"
-            ),
-        )
-    )
+    logs.append(BacktestLogEntry(
+        ts=_utc_now(), level="info",
+        message=(
+            f"구간 워크포워드: {zone_walkforward.samples}개 샘플, "
+            f"정확도 {zone_walkforward.accuracy_pct}% "
+            f"(롱 {zone_walkforward.long_accuracy_pct}% / 숏 {zone_walkforward.short_accuracy_pct}%), "
+            f"기대값 {zone_walkforward.avg_forward_r}R, 허위돌파 {zone_walkforward.false_break_pct}%"
+        ),
+    ))
 
     symbol_profile_data: dict[str, dict] = {}
     if recommendation and symbol_candles:
         from app.backtest.symbol_sl_tp import build_symbol_profiles, persist_profiles_from_backtest
 
         built = build_symbol_profiles(
-            run_cfg,
-            symbol_candles,
-            state.trades,
-            min_run,
-            invert_run,
-            window_run,
-            rid,
+            run_cfg, symbol_candles, state.trades, min_run, invert_run, window_run, rid,
         )
         if built:
             merged = persist_profiles_from_backtest(built)
             symbol_profile_data = {k: v.model_dump() for k, v in merged.items()}
             for iid, p in built.items():
-                logs.append(
-                    BacktestLogEntry(
-                        ts=_utc_now(),
-                        level="info",
-                        message=(
-                            f"{iid} 종목 SL/TP — SL {p.stop_loss_pct}% TP {p.take_profit_pct}% "
-                            f"승률 {p.win_rate}% ({p.trades}건"
-                            f"{f'·익절평균 {p.avg_win_tp_pct}%' if p.avg_win_tp_pct else ''})"
-                        ),
-                    )
-                )
+                logs.append(BacktestLogEntry(
+                    ts=_utc_now(), level="info",
+                    message=f"{iid} 종목 SL/TP - SL {p.stop_loss_pct}% TP {p.take_profit_pct}% 승률 {p.win_rate}% ({p.trades}건)",
+                ))
 
     return BacktestResult(
         id=rid,
@@ -1170,8 +1145,12 @@ def build_result(
             "leverage": config.leverage,
             "stop_loss_pct": config.stop_loss_pct,
             "take_profit_pct": config.take_profit_pct,
+            "profit_protect_trigger_pct": config.profit_protect_trigger_pct,
+            "profit_protect_confirm_sec": config.profit_protect_confirm_sec,
             "stop_loss_pct_applied": run_cfg.stop_loss_pct,
             "take_profit_pct_applied": run_cfg.take_profit_pct,
+            "profit_protect_trigger_pct_applied": run_cfg.profit_protect_trigger_pct,
+            "profit_protect_confirm_sec_applied": run_cfg.profit_protect_confirm_sec,
             "trend_scale_in": run_cfg.trend_scale_in,
             "max_scale_ins": run_cfg.max_scale_ins,
             "scale_in_size_pct": run_cfg.scale_in_size_pct,

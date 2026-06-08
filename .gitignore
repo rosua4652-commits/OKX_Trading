@@ -1,3 +1,7 @@
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 __pycache__/
 *.py[cod]
 .venv/
@@ -14,3 +18,26 @@ frontend/dist/
 .pytest_cache/
 .coverage
 htmlcov/
+=======
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+.env
+.DS_Store
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
